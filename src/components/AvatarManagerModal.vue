@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { appStore } from '../store/appStore';
 import { getCharacters, getCurrentCharacter, type CharacterBrief } from '../bridge/st-api';
-import { showToast } from '../bridge/host';
+import { getMainWin, showToast } from '../bridge/host';
 import { triggerReplaceCharacterAvatar, triggerReplaceUserAvatar } from '../features/avatarStyle';
 import {
   deleteGalleryImageBlob,
@@ -14,6 +14,7 @@ import type { AvatarCropRule, AvatarGalleryItem } from '../types';
 
 const activeTab = ref<'gallery' | 'style'>('gallery');
 const targetType = ref<'char' | 'user'>('char');
+const userGalleryScope = ref<'global' | 'char'>('global');
 
 const characters = ref<CharacterBrief[]>([]);
 const selectedCharAvatar = ref<string>('');
@@ -22,6 +23,20 @@ const selectedCropKey = ref<string>('__global__');
 const showUrlBar = ref(false);
 const urlInput = ref('');
 const galleryFileInput = ref<HTMLInputElement | null>(null);
+
+// 图库批量删除状态
+const isGalleryBatch = ref(false);
+const selectedGalleryIds = ref<string[]>([]);
+
+// 交互式自由裁剪框状态（百分比 0-100）
+const isFreeCropMode = ref(false);
+const cropImgRef = ref<HTMLImageElement | null>(null);
+const cropBox = ref({ x: 15, y: 10, w: 70, h: 70 });
+let dragMode: 'move' | 'resize' | null = null;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragStartBox = { x: 0, y: 0, w: 0, h: 0 };
+let dragContainerRect: DOMRect | null = null;
 
 function syncActiveCharacter() {
   characters.value = getCharacters();
@@ -41,19 +56,37 @@ watch(
       syncActiveCharacter();
       showUrlBar.value = false;
       urlInput.value = '';
+      isGalleryBatch.value = false;
+      selectedGalleryIds.value = [];
+      isFreeCropMode.value = false;
     }
   },
   { immediate: true },
 );
 
-const activeGalleryKey = computed(() =>
-  targetType.value === 'user' ? '__user__' : selectedCharAvatar.value,
-);
+watch([targetType, userGalleryScope, selectedCharAvatar], () => {
+  isGalleryBatch.value = false;
+  selectedGalleryIds.value = [];
+});
+
+const activeGalleryKey = computed(() => {
+  if (targetType.value === 'user') {
+    if (userGalleryScope.value === 'char') {
+      return selectedCharAvatar.value ? `__user_char__:${selectedCharAvatar.value}` : '';
+    }
+    return '__user__';
+  }
+  return selectedCharAvatar.value;
+});
 
 const galleryList = computed<AvatarGalleryItem[]>(() => {
-  // 依赖 galleryCacheVersion 以响应 Blob URL 加载完成
   void appStore.galleryCacheVersion;
   if (targetType.value === 'user') {
+    if (userGalleryScope.value === 'char') {
+      return selectedCharAvatar.value
+        ? appStore.settings.avatar.perCharUserGallery[selectedCharAvatar.value] || []
+        : [];
+    }
     return appStore.settings.avatar.userGallery;
   }
   const key = selectedCharAvatar.value;
@@ -82,7 +115,8 @@ const currentCrop = computed<AvatarCropRule>(() => {
 
 const previewSrc = computed(() => {
   void appStore.galleryCacheVersion;
-  const key = selectedCropKey.value === '__global__' ? selectedCharAvatar.value : selectedCropKey.value;
+  const key =
+    selectedCropKey.value === '__global__' ? selectedCharAvatar.value : selectedCropKey.value;
   if (key) {
     const overridden = resolveOverrideUrl(key);
     if (overridden) return overridden;
@@ -112,6 +146,39 @@ function getItemSrc(item: AvatarGalleryItem): string {
   return resolveGalleryItemUrl(item);
 }
 
+function appendToActiveGallery(item: AvatarGalleryItem) {
+  if (targetType.value === 'user') {
+    if (userGalleryScope.value === 'char') {
+      const ch = selectedCharAvatar.value;
+      if (!ch) return;
+      if (!appStore.settings.avatar.perCharUserGallery[ch]) {
+        appStore.settings.avatar.perCharUserGallery[ch] = [];
+      }
+      appStore.settings.avatar.perCharUserGallery[ch].unshift(item);
+    } else {
+      appStore.settings.avatar.userGallery.unshift(item);
+    }
+  } else {
+    const key = selectedCharAvatar.value;
+    if (!key) return;
+    if (!appStore.settings.avatar.perCharacterGallery[key]) {
+      appStore.settings.avatar.perCharacterGallery[key] = [];
+    }
+    appStore.settings.avatar.perCharacterGallery[key].unshift(item);
+  }
+}
+
+function handleGalleryCardClick(itemId: string) {
+  if (isGalleryBatch.value) {
+    if (!itemId) return;
+    const idx = selectedGalleryIds.value.indexOf(itemId);
+    if (idx >= 0) selectedGalleryIds.value.splice(idx, 1);
+    else selectedGalleryIds.value.push(itemId);
+    return;
+  }
+  selectGalleryItem(itemId);
+}
+
 function selectGalleryItem(itemId: string) {
   const key = activeGalleryKey.value;
   if (!key) return;
@@ -120,6 +187,32 @@ function selectGalleryItem(itemId: string) {
   } else {
     appStore.settings.avatar.avatarOverrides[key] = itemId;
   }
+}
+
+function toggleGalleryBatch() {
+  isGalleryBatch.value = !isGalleryBatch.value;
+  selectedGalleryIds.value = [];
+}
+
+function selectAllGallery() {
+  const all = galleryList.value.map((i) => i.id);
+  if (all.length > 0 && all.every((id) => selectedGalleryIds.value.includes(id))) {
+    selectedGalleryIds.value = [];
+  } else {
+    selectedGalleryIds.value = all;
+  }
+}
+
+async function confirmBatchDeleteGallery() {
+  const ids = new Set(selectedGalleryIds.value);
+  if (ids.size === 0) return;
+  const targets = galleryList.value.filter((i) => ids.has(i.id));
+  for (const item of targets) {
+    await handleRemoveGalleryItem(item);
+  }
+  selectedGalleryIds.value = [];
+  isGalleryBatch.value = false;
+  showToast('success', `已删除 ${targets.length} 张`);
 }
 
 function triggerUpload() {
@@ -132,8 +225,7 @@ async function handleGalleryUpload(ev: Event) {
   input.value = '';
   if (files.length === 0) return;
 
-  const key = activeGalleryKey.value;
-  if (!key) {
+  if (!activeGalleryKey.value) {
     showToast('warning', '请先选择角色');
     return;
   }
@@ -142,14 +234,7 @@ async function handleGalleryUpload(ev: Event) {
   for (const file of files) {
     try {
       const item = await saveGalleryImageBlob(file, file.name);
-      if (targetType.value === 'user') {
-        appStore.settings.avatar.userGallery.unshift(item);
-      } else {
-        if (!appStore.settings.avatar.perCharacterGallery[key]) {
-          appStore.settings.avatar.perCharacterGallery[key] = [];
-        }
-        appStore.settings.avatar.perCharacterGallery[key].unshift(item);
-      }
+      appendToActiveGallery(item);
       added++;
     } catch (err: any) {
       showToast('error', `上传失败：${err?.message || err}`);
@@ -163,8 +248,7 @@ async function handleGalleryUpload(ev: Event) {
 function handleAddUrl() {
   const clean = urlInput.value.trim();
   if (!clean) return;
-  const key = activeGalleryKey.value;
-  if (!key) {
+  if (!activeGalleryKey.value) {
     showToast('warning', '请先选择角色');
     return;
   }
@@ -173,14 +257,7 @@ function handleAddUrl() {
     source: 'url',
     url: clean,
   };
-  if (targetType.value === 'user') {
-    appStore.settings.avatar.userGallery.unshift(item);
-  } else {
-    if (!appStore.settings.avatar.perCharacterGallery[key]) {
-      appStore.settings.avatar.perCharacterGallery[key] = [];
-    }
-    appStore.settings.avatar.perCharacterGallery[key].unshift(item);
-  }
+  appendToActiveGallery(item);
   urlInput.value = '';
   showUrlBar.value = false;
 }
@@ -194,13 +271,20 @@ async function handleRemoveGalleryItem(item: AvatarGalleryItem) {
   }
 
   if (targetType.value === 'user') {
-    appStore.settings.avatar.userGallery = appStore.settings.avatar.userGallery.filter(
-      (i) => i.id !== item.id,
-    );
+    if (userGalleryScope.value === 'char') {
+      const ch = selectedCharAvatar.value;
+      if (ch && appStore.settings.avatar.perCharUserGallery[ch]) {
+        appStore.settings.avatar.perCharUserGallery[ch] =
+          appStore.settings.avatar.perCharUserGallery[ch].filter((i) => i.id !== item.id);
+      }
+    } else {
+      appStore.settings.avatar.userGallery = appStore.settings.avatar.userGallery.filter(
+        (i) => i.id !== item.id,
+      );
+    }
   } else if (appStore.settings.avatar.perCharacterGallery[key]) {
-    appStore.settings.avatar.perCharacterGallery[key] = appStore.settings.avatar.perCharacterGallery[
-      key
-    ].filter((i) => i.id !== item.id);
+    appStore.settings.avatar.perCharacterGallery[key] =
+      appStore.settings.avatar.perCharacterGallery[key].filter((i) => i.id !== item.id);
   }
 
   if (item.source === 'idb') {
@@ -236,6 +320,127 @@ function resetCurrentCrop() {
   showToast('info', '已重置');
 }
 
+// ==========================================================
+// 交互式自由裁剪框（视觉裁剪 + Canvas 实体裁剪）
+// ==========================================================
+
+function startFreeCrop() {
+  if (!previewSrc.value) {
+    showToast('warning', '暂无可裁剪图片');
+    return;
+  }
+  cropBox.value = { x: 15, y: 10, w: 70, h: 70 };
+  isFreeCropMode.value = true;
+}
+
+function getClientXY(ev: MouseEvent | TouchEvent) {
+  if ('touches' in ev && ev.touches.length > 0) {
+    return { cx: ev.touches[0].clientX, cy: ev.touches[0].clientY };
+  }
+  const m = ev as MouseEvent;
+  return { cx: m.clientX, cy: m.clientY };
+}
+
+function onCropPointerDown(mode: 'move' | 'resize', ev: MouseEvent | TouchEvent) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const imgEl = cropImgRef.value;
+  if (!imgEl) return;
+  dragContainerRect = imgEl.getBoundingClientRect();
+  dragMode = mode;
+  const { cx, cy } = getClientXY(ev);
+  dragStartX = cx;
+  dragStartY = cy;
+  dragStartBox = { ...cropBox.value };
+
+  const win = getMainWin();
+  const onMove = (e: MouseEvent | TouchEvent) => {
+    if (!dragMode || !dragContainerRect) return;
+    const { cx: nx, cy: ny } = getClientXY(e);
+    const dxPct = ((nx - dragStartX) / dragContainerRect.width) * 100;
+    const dyPct = ((ny - dragStartY) / dragContainerRect.height) * 100;
+
+    if (dragMode === 'move') {
+      const nextX = Math.min(Math.max(0, dragStartBox.x + dxPct), 100 - dragStartBox.w);
+      const nextY = Math.min(Math.max(0, dragStartBox.y + dyPct), 100 - dragStartBox.h);
+      cropBox.value = { ...dragStartBox, x: nextX, y: nextY };
+    } else {
+      const nextW = Math.min(Math.max(15, dragStartBox.w + dxPct), 100 - dragStartBox.x);
+      const nextH = Math.min(Math.max(15, dragStartBox.h + dyPct), 100 - dragStartBox.y);
+      cropBox.value = { ...dragStartBox, w: nextW, h: nextH };
+    }
+  };
+
+  const onUp = () => {
+    dragMode = null;
+    win.removeEventListener('mousemove', onMove);
+    win.removeEventListener('mouseup', onUp);
+    win.removeEventListener('touchmove', onMove);
+    win.removeEventListener('touchend', onUp);
+  };
+
+  win.addEventListener('mousemove', onMove);
+  win.addEventListener('mouseup', onUp);
+  win.addEventListener('touchmove', onMove, { passive: false });
+  win.addEventListener('touchend', onUp);
+}
+
+function saveVisualCrop() {
+  const b = cropBox.value;
+  const centerX = Math.round(b.x + b.w / 2);
+  const centerY = Math.round(b.y + b.h / 2);
+  const scale = Number(Math.min(2.5, Math.max(1, 100 / Math.max(b.w, b.h))).toFixed(2));
+  appStore.settings.avatar.enabled = true;
+  updateCrop({ posX: centerX, posY: centerY, scale });
+  isFreeCropMode.value = false;
+  showToast('success', '已应用视觉裁剪');
+}
+
+async function saveCanvasCrop() {
+  const imgEl = cropImgRef.value;
+  if (!imgEl || !imgEl.naturalWidth || !imgEl.naturalHeight) {
+    showToast('error', '图片尚未加载完成');
+    return;
+  }
+  try {
+    const b = cropBox.value;
+    const sx = (b.x / 100) * imgEl.naturalWidth;
+    const sy = (b.y / 100) * imgEl.naturalHeight;
+    const sw = (b.w / 100) * imgEl.naturalWidth;
+    const sh = (b.h / 100) * imgEl.naturalHeight;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(sw));
+    canvas.height = Math.max(1, Math.round(sh));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 不可用');
+    ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((res) => resolve(res), 'image/png'),
+    );
+    if (!blob) throw new Error('生成裁剪图片失败');
+
+    const item = await saveGalleryImageBlob(blob, `crop_${Date.now()}.png`);
+    const targetChar =
+      selectedCropKey.value === '__global__' ? selectedCharAvatar.value : selectedCropKey.value;
+    if (targetChar) {
+      if (!appStore.settings.avatar.perCharacterGallery[targetChar]) {
+        appStore.settings.avatar.perCharacterGallery[targetChar] = [];
+      }
+      appStore.settings.avatar.perCharacterGallery[targetChar].unshift(item);
+      appStore.settings.avatar.avatarOverrides[targetChar] = item.id;
+    } else {
+      appStore.settings.avatar.userGallery.unshift(item);
+      appStore.settings.avatar.avatarOverrides['__user__'] = item.id;
+    }
+    isFreeCropMode.value = false;
+    showToast('success', '实体裁剪已存入图库并应用');
+  } catch (err: any) {
+    showToast('error', `实体裁剪失败：${err?.message || err}`);
+  }
+}
+
 function close() {
   appStore.showAvatarModal = false;
 }
@@ -243,42 +448,43 @@ function close() {
 
 <template>
   <div v-if="appStore.showAvatarModal" class="tc-modal-mask" @click.self="close">
-      <div class="tc-modal">
-        <div class="tc-modal-header">
-          <div class="tc-modal-title">
-            <i class="fa-solid fa-user-pen"></i>
-            <span>头像管理</span>
-          </div>
-          <button type="button" class="tc-icon-btn" title="关闭" @click="close">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
+    <div class="tc-modal">
+      <div class="tc-modal-header">
+        <div class="tc-modal-title">
+          <i class="fa-solid fa-user-pen"></i>
+          <span>头像管理</span>
         </div>
+        <button type="button" class="tc-icon-btn" title="关闭" @click="close">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
 
-        <div class="tc-tabs">
-          <button
-            type="button"
-            class="tc-tab"
-            :class="{ active: activeTab === 'gallery' }"
-            @click="activeTab = 'gallery'"
-          >
-            <i class="fa-solid fa-images"></i>
-            <span>图库</span>
-          </button>
-          <button
-            type="button"
-            class="tc-tab"
-            :class="{ active: activeTab === 'style' }"
-            @click="activeTab = 'style'"
-          >
-            <i class="fa-solid fa-crop-simple"></i>
-            <span>样式与裁剪</span>
-          </button>
-        </div>
+      <div class="tc-tabs">
+        <button
+          type="button"
+          class="tc-tab"
+          :class="{ active: activeTab === 'gallery' }"
+          @click="activeTab = 'gallery'"
+        >
+          <i class="fa-solid fa-images"></i>
+          <span>图库</span>
+        </button>
+        <button
+          type="button"
+          class="tc-tab"
+          :class="{ active: activeTab === 'style' }"
+          @click="activeTab = 'style'"
+        >
+          <i class="fa-solid fa-crop-simple"></i>
+          <span>样式与裁剪</span>
+        </button>
+      </div>
 
-        <div class="tc-modal-body">
-          <!-- Tab 1: 头像图库 -->
-          <div v-if="activeTab === 'gallery'" class="tc-section">
-            <div class="tc-row-between tc-wrap">
+      <div class="tc-modal-body">
+        <!-- Tab 1: 头像图库 -->
+        <div v-if="activeTab === 'gallery'" class="tc-section">
+          <div class="tc-row-between tc-wrap">
+            <div class="tc-row-inline">
               <div class="tc-seg">
                 <button
                   type="button"
@@ -300,206 +506,333 @@ function close() {
                 </button>
               </div>
 
-              <div class="tc-row-inline">
-                <button type="button" class="tc-tool-btn" title="上传图片" @click="triggerUpload">
-                  <i class="fa-solid fa-upload"></i>
+              <!-- 用户图库：全局 vs 当前角色专属 -->
+              <div v-if="targetType === 'user'" class="tc-seg">
+                <button
+                  type="button"
+                  class="tc-seg-btn"
+                  :class="{ active: userGalleryScope === 'global' }"
+                  @click="userGalleryScope = 'global'"
+                >
+                  全局
                 </button>
                 <button
                   type="button"
-                  class="tc-tool-btn"
-                  :class="{ active: showUrlBar }"
-                  title="添加图片链接"
-                  @click="showUrlBar = !showUrlBar"
+                  class="tc-seg-btn"
+                  :class="{ active: userGalleryScope === 'char' }"
+                  @click="userGalleryScope = 'char'"
                 >
-                  <i class="fa-solid fa-link"></i>
+                  当前角色
                 </button>
-                <button type="button" class="tc-tool-btn" title="替换原图" @click="handleReplaceNative">
-                  <i class="fa-solid fa-file-image"></i>
-                </button>
-                <input
-                  ref="galleryFileInput"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style="display: none"
-                  @change="handleGalleryUpload"
-                />
               </div>
             </div>
 
-            <select
-              v-if="targetType === 'char'"
-              v-model="selectedCharAvatar"
-              class="tc-select"
-            >
-              <option value="">选择角色</option>
-              <option v-for="c in characters" :key="c.avatar" :value="c.avatar">{{ c.name }}</option>
-            </select>
-
-            <div v-if="showUrlBar" class="tc-form-row">
-              <input
-                v-model="urlInput"
-                type="url"
-                class="tc-input tc-flex-1"
-                placeholder="输入图片 URL..."
-                @keyup.enter="handleAddUrl"
-              />
-              <button type="button" class="tc-btn primary" title="添加" @click="handleAddUrl">
-                <i class="fa-solid fa-check"></i>
+            <div class="tc-row-inline">
+              <button type="button" class="tc-tool-btn" title="上传图片" @click="triggerUpload">
+                <i class="fa-solid fa-upload"></i>
               </button>
-            </div>
-
-            <!-- 图库网格 -->
-            <div class="tc-gallery-grid">
-              <!-- 原图卡片 -->
-              <div
-                class="tc-gallery-card"
-                :class="{ active: !activeOverrideId }"
-                title="还原原图"
-                @click="selectGalleryItem('')"
+              <button
+                type="button"
+                class="tc-tool-btn"
+                :class="{ active: showUrlBar }"
+                title="添加链接"
+                @click="showUrlBar = !showUrlBar"
               >
-                <img
-                  v-if="targetType === 'char' && nativeCharAvatarSrc"
-                  :src="nativeCharAvatarSrc"
-                  alt="original"
-                />
-                <div v-else class="tc-gallery-orig-placeholder">
-                  <i class="fa-solid fa-rotate-left"></i>
-                </div>
-                <span class="tc-gallery-badge">原图</span>
-              </div>
-
-              <!-- 图库图片 -->
-              <div
-                v-for="item in galleryList"
-                :key="item.id"
-                class="tc-gallery-card"
-                :class="{ active: activeOverrideId === item.id }"
-                @click="selectGalleryItem(item.id)"
+                <i class="fa-solid fa-link"></i>
+              </button>
+              <button
+                type="button"
+                class="tc-tool-btn"
+                :class="{ active: isGalleryBatch }"
+                title="批量删除"
+                @click="toggleGalleryBatch"
               >
-                <img v-if="getItemSrc(item)" :src="getItemSrc(item)" :alt="item.name || 'avatar'" />
-                <div v-else class="tc-gallery-orig-placeholder">
-                  <i class="fa-regular fa-image"></i>
-                </div>
-                <button
-                  type="button"
-                  class="tc-gallery-del"
-                  title="删除"
-                  @click.stop="handleRemoveGalleryItem(item)"
-                >
-                  <i class="fa-solid fa-trash"></i>
-                </button>
-              </div>
+                <i class="fa-solid fa-list-check"></i>
+              </button>
+              <button type="button" class="tc-tool-btn" title="替换原图" @click="handleReplaceNative">
+                <i class="fa-solid fa-file-image"></i>
+              </button>
+              <input
+                ref="galleryFileInput"
+                type="file"
+                accept="image/*"
+                multiple
+                style="display: none"
+                @change="handleGalleryUpload"
+              />
             </div>
           </div>
 
-          <!-- Tab 2: 样式与裁剪 -->
-          <div v-if="activeTab === 'style'" class="tc-section">
-            <div class="tc-row-between tc-wrap">
-              <label class="tc-switch-row">
-                <input v-model="appStore.settings.avatar.enabled" type="checkbox" />
-                <span>启用自定义样式与裁剪</span>
-              </label>
-              <label class="tc-switch-row">
-                <input v-model="appStore.settings.avatar.enableReplaceButton" type="checkbox" />
-                <span>详情页替换按钮</span>
-              </label>
+          <select
+            v-if="targetType === 'char' || userGalleryScope === 'char'"
+            v-model="selectedCharAvatar"
+            class="tc-select"
+          >
+            <option value="">选择角色</option>
+            <option v-for="c in characters" :key="c.avatar" :value="c.avatar">{{ c.name }}</option>
+          </select>
+
+          <div v-if="showUrlBar" class="tc-form-row">
+            <input
+              v-model="urlInput"
+              type="url"
+              class="tc-input tc-flex-1"
+              placeholder="输入图片 URL..."
+              @keyup.enter="handleAddUrl"
+            />
+            <button type="button" class="tc-btn primary" title="添加" @click="handleAddUrl">
+              <i class="fa-solid fa-check"></i>
+            </button>
+          </div>
+
+          <!-- 图库批量删除操作条 -->
+          <div v-if="isGalleryBatch" class="tc-batch-bar tc-batch-wrap">
+            <span class="tc-batch-count">{{ selectedGalleryIds.length }}</span>
+            <button type="button" class="tc-batch-btn" title="全选" @click="selectAllGallery">
+              <i class="fa-solid fa-check-double"></i>
+            </button>
+            <button
+              type="button"
+              class="tc-batch-btn tc-danger"
+              title="删除选中"
+              @click="confirmBatchDeleteGallery"
+            >
+              <i class="fa-solid fa-trash"></i>
+            </button>
+            <button
+              type="button"
+              class="tc-batch-btn tc-batch-close"
+              title="取消"
+              @click="toggleGalleryBatch"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+
+          <!-- 图库网格 -->
+          <div class="tc-gallery-grid">
+            <div
+              v-if="!isGalleryBatch"
+              class="tc-gallery-card"
+              :class="{ active: !activeOverrideId }"
+              title="还原原图"
+              @click="selectGalleryItem('')"
+            >
+              <img
+                v-if="targetType === 'char' && nativeCharAvatarSrc"
+                :src="nativeCharAvatarSrc"
+                alt="original"
+              />
+              <div v-else class="tc-gallery-orig-placeholder">
+                <i class="fa-solid fa-rotate-left"></i>
+              </div>
+              <span class="tc-gallery-badge">原图</span>
             </div>
 
-            <div class="tc-grid-3" :class="{ 'tc-disabled': !appStore.settings.avatar.enabled }">
-              <label class="tc-field">
-                <span>宽度 {{ appStore.settings.avatar.sizePx === 0 ? '默认' : `${appStore.settings.avatar.sizePx}px` }}</span>
-                <input
-                  v-model.number="appStore.settings.avatar.sizePx"
-                  type="range"
-                  min="0"
-                  max="140"
-                  step="2"
-                />
-              </label>
+            <div
+              v-for="item in galleryList"
+              :key="item.id"
+              class="tc-gallery-card"
+              :class="{
+                active: !isGalleryBatch && activeOverrideId === item.id,
+                'batch-picked': isGalleryBatch && selectedGalleryIds.includes(item.id),
+              }"
+              @click="handleGalleryCardClick(item.id)"
+            >
+              <img v-if="getItemSrc(item)" :src="getItemSrc(item)" :alt="item.name || 'avatar'" />
+              <div v-else class="tc-gallery-orig-placeholder">
+                <i class="fa-regular fa-image"></i>
+              </div>
+              <span v-if="isGalleryBatch" class="tc-gallery-chk">
+                <i
+                  :class="
+                    selectedGalleryIds.includes(item.id)
+                      ? 'fa-solid fa-square-check'
+                      : 'fa-regular fa-square'
+                  "
+                ></i>
+              </span>
+              <button
+                v-else
+                type="button"
+                class="tc-gallery-del"
+                title="删除"
+                @click.stop="handleRemoveGalleryItem(item)"
+              >
+                <i class="fa-solid fa-trash"></i>
+              </button>
+            </div>
+          </div>
+        </div>
 
-              <label class="tc-field">
-                <span>比例</span>
-                <select v-model="appStore.settings.avatar.aspectRatio" class="tc-select">
-                  <option value="auto">默认</option>
-                  <option value="1/1">1:1</option>
-                  <option value="3/4">3:4</option>
-                  <option value="2/3">2:3</option>
-                </select>
-              </label>
+        <!-- Tab 2: 样式与裁剪 -->
+        <div v-if="activeTab === 'style'" class="tc-section">
+          <div class="tc-row-inline">
+            <label class="tc-switch-row">
+              <input v-model="appStore.settings.avatar.enabled" type="checkbox" />
+              <span>自定义样式</span>
+            </label>
+            <label class="tc-switch-row">
+              <input v-model="appStore.settings.avatar.disableAvatarZoom" type="checkbox" />
+              <span>禁用点击放大</span>
+            </label>
+            <label class="tc-switch-row">
+              <input v-model="appStore.settings.avatar.enableReplaceButton" type="checkbox" />
+              <span>详情页替换按钮</span>
+            </label>
+          </div>
 
-              <label class="tc-field">
-                <span>圆角 {{ appStore.settings.avatar.borderRadiusPx < 0 ? '默认' : `${appStore.settings.avatar.borderRadiusPx}px` }}</span>
-                <input
-                  v-model.number="appStore.settings.avatar.borderRadiusPx"
-                  type="range"
-                  min="-1"
-                  max="60"
-                  step="1"
-                />
-              </label>
+          <div class="tc-grid-3" :class="{ 'tc-disabled': !appStore.settings.avatar.enabled }">
+            <label class="tc-field">
+              <span>宽度 {{ appStore.settings.avatar.sizePx === 0 ? '默认' : `${appStore.settings.avatar.sizePx}px` }}</span>
+              <input
+                v-model.number="appStore.settings.avatar.sizePx"
+                type="range"
+                min="0"
+                max="140"
+                step="2"
+              />
+            </label>
+
+            <label class="tc-field">
+              <span>比例</span>
+              <select v-model="appStore.settings.avatar.aspectRatio" class="tc-select">
+                <option value="auto">默认</option>
+                <option value="1/1">1:1</option>
+                <option value="3/4">3:4</option>
+                <option value="2/3">2:3</option>
+              </select>
+            </label>
+
+            <label class="tc-field">
+              <span>圆角 {{ appStore.settings.avatar.borderRadiusPx < 0 ? '默认' : `${appStore.settings.avatar.borderRadiusPx}px` }}</span>
+              <input
+                v-model.number="appStore.settings.avatar.borderRadiusPx"
+                type="range"
+                min="-1"
+                max="60"
+                step="1"
+              />
+            </label>
+          </div>
+
+          <div class="tc-divider"></div>
+
+          <div class="tc-section">
+            <div class="tc-form-row">
+              <select v-model="selectedCropKey" class="tc-select tc-flex-1">
+                <option value="__global__">全局默认</option>
+                <option v-for="c in characters" :key="c.avatar" :value="c.avatar">
+                  {{ c.name }}
+                </option>
+              </select>
+              <button
+                type="button"
+                class="tc-btn"
+                :class="{ primary: isFreeCropMode }"
+                title="自由裁剪"
+                @click="isFreeCropMode ? (isFreeCropMode = false) : startFreeCrop()"
+              >
+                <i class="fa-solid fa-crop"></i>
+              </button>
+              <button type="button" class="tc-btn" title="重置" @click="resetCurrentCrop">
+                <i class="fa-solid fa-rotate-left"></i>
+              </button>
             </div>
 
-            <div class="tc-divider"></div>
-
-            <div class="tc-section" :class="{ 'tc-disabled': !appStore.settings.avatar.enabled }">
-              <div class="tc-form-row">
-                <select v-model="selectedCropKey" class="tc-select tc-flex-1">
-                  <option value="__global__">全局默认</option>
-                  <option v-for="c in characters" :key="c.avatar" :value="c.avatar">
-                    {{ c.name }}
-                  </option>
-                </select>
-                <button type="button" class="tc-btn" title="重置" @click="resetCurrentCrop">
-                  <i class="fa-solid fa-rotate-left"></i>
+            <!-- 交互式自由裁剪工作台 -->
+            <div v-if="isFreeCropMode" class="tc-freecrop-wrap">
+              <div class="tc-freecrop-stage">
+                <img
+                  ref="cropImgRef"
+                  :src="previewSrc"
+                  crossorigin="anonymous"
+                  class="tc-freecrop-img"
+                  alt="crop source"
+                />
+                <div
+                  class="tc-freecrop-box"
+                  :style="{
+                    left: `${cropBox.x}%`,
+                    top: `${cropBox.y}%`,
+                    width: `${cropBox.w}%`,
+                    height: `${cropBox.h}%`,
+                  }"
+                  @mousedown="onCropPointerDown('move', $event)"
+                  @touchstart="onCropPointerDown('move', $event)"
+                >
+                  <div
+                    class="tc-freecrop-handle"
+                    @mousedown="onCropPointerDown('resize', $event)"
+                    @touchstart="onCropPointerDown('resize', $event)"
+                  ></div>
+                </div>
+              </div>
+              <div class="tc-row-inline">
+                <button type="button" class="tc-btn primary tc-flex-1" @click="saveVisualCrop">
+                  <i class="fa-solid fa-eye"></i>
+                  <span>视觉裁剪</span>
+                </button>
+                <button type="button" class="tc-btn tc-flex-1" @click="saveCanvasCrop">
+                  <i class="fa-solid fa-scissors"></i>
+                  <span>实体裁剪</span>
+                </button>
+                <button type="button" class="tc-btn" title="取消" @click="isFreeCropMode = false">
+                  <i class="fa-solid fa-xmark"></i>
                 </button>
               </div>
+            </div>
 
-              <div class="tc-crop-workbench">
-                <div class="tc-crop-preview-box" :style="previewBoxStyle">
-                  <img v-if="previewSrc" :src="previewSrc" :style="previewImgStyle" alt="preview" />
-                  <div v-else class="tc-crop-placeholder">
-                    <i class="fa-regular fa-user"></i>
-                  </div>
+            <!-- 常规滑块微调工作台 -->
+            <div
+              v-else
+              class="tc-crop-workbench"
+              :class="{ 'tc-disabled': !appStore.settings.avatar.enabled }"
+            >
+              <div class="tc-crop-preview-box" :style="previewBoxStyle">
+                <img v-if="previewSrc" :src="previewSrc" :style="previewImgStyle" alt="preview" />
+                <div v-else class="tc-crop-placeholder">
+                  <i class="fa-regular fa-user"></i>
                 </div>
+              </div>
 
-                <div class="tc-crop-sliders">
-                  <label class="tc-field">
-                    <span>水平 {{ currentCrop.posX }}%</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      :value="currentCrop.posX"
-                      @input="updateCrop({ posX: Number(($event.target as HTMLInputElement).value) })"
-                    />
-                  </label>
-                  <label class="tc-field">
-                    <span>垂直 {{ currentCrop.posY }}%</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      :value="currentCrop.posY"
-                      @input="updateCrop({ posY: Number(($event.target as HTMLInputElement).value) })"
-                    />
-                  </label>
-                  <label class="tc-field">
-                    <span>缩放 {{ currentCrop.scale.toFixed(2) }}x</span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="2.5"
-                      step="0.05"
-                      :value="currentCrop.scale"
-                      @input="updateCrop({ scale: Number(($event.target as HTMLInputElement).value) })"
-                    />
-                  </label>
-                </div>
+              <div class="tc-crop-sliders">
+                <label class="tc-field">
+                  <span>水平 {{ currentCrop.posX }}%</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    :value="currentCrop.posX"
+                    @input="updateCrop({ posX: Number(($event.target as HTMLInputElement).value) })"
+                  />
+                </label>
+                <label class="tc-field">
+                  <span>垂直 {{ currentCrop.posY }}%</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    :value="currentCrop.posY"
+                    @input="updateCrop({ posY: Number(($event.target as HTMLInputElement).value) })"
+                  />
+                </label>
+                <label class="tc-field">
+                  <span>缩放 {{ currentCrop.scale.toFixed(2) }}x</span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="2.5"
+                    step="0.05"
+                    :value="currentCrop.scale"
+                    @input="updateCrop({ scale: Number(($event.target as HTMLInputElement).value) })"
+                  />
+                </label>
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
+  </div>
 </template>

@@ -72,6 +72,8 @@ export interface AvatarConfig {
   borderRadiusPx: number;
   /** 是否在角色/用户详情页注入快捷替换头像按钮 */
   enableReplaceButton: boolean;
+  /** 禁用点击聊天头像放大预览 */
+  disableAvatarZoom: boolean;
   /** 默认全局裁剪位置 */
   defaultCrop: AvatarCropRule;
   /** 按角色头像文件名单独覆盖的裁剪规则 */
@@ -80,9 +82,14 @@ export interface AvatarConfig {
   perCharacterGallery: Record<string, AvatarGalleryItem[]>;
   /** 全局用户图库 */
   userGallery: AvatarGalleryItem[];
-  /** 头像视觉覆盖：key (charAvatar 或 '__user__') -> gallery item id */
+  /** 按当前聊天角色绑定的用户图库：charAvatar -> items */
+  perCharUserGallery: Record<string, AvatarGalleryItem[]>;
+  /** 头像视觉覆盖：key (charAvatar | '__user__' | '__user_char__:' + charAvatar) -> gallery item id */
   avatarOverrides: Record<string, string>;
 }
+
+export type SortMode = 'name-asc' | 'name-desc' | 'favorite-first' | 'usage-desc' | 'usage-asc';
+export type ListMode = 'scroll' | 'page';
 
 export interface CompanionSettings {
   version: number;
@@ -96,8 +103,18 @@ export interface CompanionSettings {
   dayNightPairs: DayNightPair[];
   autoTheme: AutoThemeConfig;
   avatar: AvatarConfig;
-  /** 是否在打开面板/切回窗口时静默同步磁盘新增主题 */
+  /** 是否在切回窗口时静默同步磁盘新增主题 */
   autoSyncOnFocus: boolean;
+  /** 排序规则 */
+  sortBy: SortMode;
+  /** 列表显示模式 */
+  listMode: ListMode;
+  /** 分页每页条数 */
+  pageSize: number;
+  /** 使用次数统计：themeName -> count */
+  usageCounts: Record<string, number>;
+  /** 是否在列表项旁显示使用次数 */
+  showUsageCount: boolean;
 }
 
 export interface StVaultThemePushedDetail {

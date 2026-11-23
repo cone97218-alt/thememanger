@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   appStore,
   createTag,
@@ -14,6 +14,7 @@ import {
   ingestTheme,
   isFavorite,
   renameTheme,
+  reorderTags,
   selectTheme,
   setThemeBackgroundBinding,
   syncThemesWithDisk,
@@ -28,10 +29,14 @@ import type { ThemeObject } from '../types';
 
 const searchQuery = ref('');
 const onlyFavorites = ref(false);
-const activeTagId = ref<string>(''); // '' = 全部, '__untagged__' = 未分类, 或任意层级 tag.id
+const showDisplayBar = ref(false);
+const activeTagId = ref<string>('');
 const editingTagTheme = ref<string | null>(null);
 const newTagInput = ref('');
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+// 分页状态
+const currentPage = ref(1);
 
 // 批量编辑状态
 const isBatchMode = ref(false);
@@ -39,6 +44,10 @@ const selectedNames = ref<string[]>([]);
 const batchTagAction = ref<'add' | 'remove' | null>(null);
 const batchNewTagInput = ref('');
 const isBatchBusy = ref(false);
+
+// 标签拖拽排序状态
+const draggingTagId = ref<string | null>(null);
+const dragOverTagId = ref<string | null>(null);
 
 const rootTags = computed(() => getRootTags());
 const flattenedTags = computed(() => getFlattenedTagTree());
@@ -60,6 +69,7 @@ const filteredThemes = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
   const favSet = new Set(appStore.settings.favorites);
   const recentSet = new Set(appStore.recentlyAdded);
+  const usageMap = appStore.settings.usageCounts;
 
   const taggedSet = new Set<string>();
   appStore.settings.tags.forEach((t) => t.themes.forEach((n) => taggedSet.add(n)));
@@ -80,17 +90,54 @@ const filteredThemes = computed(() => {
     return true;
   });
 
+  const mode = appStore.settings.sortBy || 'favorite-first';
+
   return [...list].sort((a, b) => {
     const aRec = recentSet.has(a.name) ? 1 : 0;
     const bRec = recentSet.has(b.name) ? 1 : 0;
     if (aRec !== bRec) return bRec - aRec;
 
-    const aFav = favSet.has(a.name) ? 1 : 0;
-    const bFav = favSet.has(b.name) ? 1 : 0;
-    if (aFav !== bFav) return bFav - aFav;
-
+    if (mode === 'favorite-first') {
+      const aFav = favSet.has(a.name) ? 1 : 0;
+      const bFav = favSet.has(b.name) ? 1 : 0;
+      if (aFav !== bFav) return bFav - aFav;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    }
+    if (mode === 'name-desc') {
+      return b.name.localeCompare(a.name, 'zh-CN');
+    }
+    if (mode === 'usage-desc') {
+      const diff = (usageMap[b.name] || 0) - (usageMap[a.name] || 0);
+      return diff !== 0 ? diff : a.name.localeCompare(b.name, 'zh-CN');
+    }
+    if (mode === 'usage-asc') {
+      const diff = (usageMap[a.name] || 0) - (usageMap[b.name] || 0);
+      return diff !== 0 ? diff : a.name.localeCompare(b.name, 'zh-CN');
+    }
     return a.name.localeCompare(b.name, 'zh-CN');
   });
+});
+
+const totalPages = computed(() => {
+  if (appStore.settings.listMode !== 'page') return 1;
+  const size = Math.max(1, Number(appStore.settings.pageSize) || 50);
+  return Math.max(1, Math.ceil(filteredThemes.value.length / size));
+});
+
+const displayedThemes = computed(() => {
+  if (appStore.settings.listMode !== 'page') return filteredThemes.value;
+  const size = Math.max(1, Number(appStore.settings.pageSize) || 50);
+  const page = Math.min(Math.max(1, currentPage.value), totalPages.value);
+  const start = (page - 1) * size;
+  return filteredThemes.value.slice(start, start + size);
+});
+
+watch([searchQuery, onlyFavorites, activeTagId, () => appStore.settings.pageSize], () => {
+  currentPage.value = 1;
+});
+
+watch(totalPages, (tp) => {
+  if (currentPage.value > tp) currentPage.value = tp;
 });
 
 function toggleCollapse() {
@@ -107,6 +154,37 @@ function handleRandomTheme() {
   const others = pool.length > 1 ? pool.filter((t) => t.name !== appStore.activeTheme) : pool;
   const picked = others[Math.floor(Math.random() * others.length)];
   if (picked) selectTheme(picked.name);
+}
+
+// ==========================================================
+// 标签拖拽排序
+// ==========================================================
+
+function onTagDragStart(tagId: string, ev: DragEvent) {
+  draggingTagId.value = tagId;
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', tagId);
+  }
+}
+
+function onTagDragOver(tagId: string) {
+  if (draggingTagId.value && draggingTagId.value !== tagId) {
+    dragOverTagId.value = tagId;
+  }
+}
+
+function onTagDrop(targetTagId: string) {
+  if (draggingTagId.value && draggingTagId.value !== targetTagId) {
+    reorderTags(draggingTagId.value, targetTagId);
+  }
+  draggingTagId.value = null;
+  dragOverTagId.value = null;
+}
+
+function onTagDragEnd() {
+  draggingTagId.value = null;
+  dragOverTagId.value = null;
 }
 
 // ==========================================================
@@ -135,7 +213,7 @@ function handleRowClick(themeName: string) {
 }
 
 function batchSelectAll() {
-  const all = filteredThemes.value.map((t) => t.name);
+  const all = displayedThemes.value.map((t) => t.name);
   if (all.length > 0 && all.every((n) => selectedSet.value.has(n))) {
     selectedNames.value = [];
   } else {
@@ -144,7 +222,7 @@ function batchSelectAll() {
 }
 
 function batchSelectRange() {
-  const list = filteredThemes.value.map((t) => t.name);
+  const list = displayedThemes.value.map((t) => t.name);
   const indices: number[] = [];
   list.forEach((n, idx) => {
     if (selectedSet.value.has(n)) indices.push(idx);
@@ -164,7 +242,7 @@ function batchSelectRange() {
 
 function batchInvertSelect() {
   const cur = selectedSet.value;
-  selectedNames.value = filteredThemes.value
+  selectedNames.value = displayedThemes.value
     .map((t) => t.name)
     .filter((n) => !cur.has(n));
 }
@@ -420,6 +498,15 @@ async function handleFileImport(ev: Event) {
         <button
           type="button"
           class="tc-tool-btn"
+          :class="{ active: showDisplayBar }"
+          title="排序与分页"
+          @click="showDisplayBar = !showDisplayBar"
+        >
+          <i class="fa-solid fa-arrow-up-wide-short"></i>
+        </button>
+        <button
+          type="button"
+          class="tc-tool-btn"
           :class="{ active: isBatchMode }"
           title="批量编辑"
           @click="toggleBatchMode"
@@ -442,6 +529,41 @@ async function handleFileImport(ev: Event) {
           style="display: none"
           @change="handleFileImport"
         />
+      </div>
+
+      <!-- 排序 / 分页 / 使用次数显示控制栏 -->
+      <div v-if="showDisplayBar" class="tc-display-bar">
+        <select v-model="appStore.settings.sortBy" class="tc-mini-select" title="排序规则">
+          <option value="favorite-first">收藏优先</option>
+          <option value="name-asc">名称 A-Z</option>
+          <option value="name-desc">名称 Z-A</option>
+          <option value="usage-desc">次数 多→少</option>
+          <option value="usage-asc">次数 少→多</option>
+        </select>
+        <select v-model="appStore.settings.listMode" class="tc-mini-select" title="显示模式">
+          <option value="scroll">滚动全部</option>
+          <option value="page">分页显示</option>
+        </select>
+        <select
+          v-if="appStore.settings.listMode === 'page'"
+          v-model.number="appStore.settings.pageSize"
+          class="tc-mini-select"
+          title="每页条数"
+        >
+          <option :value="30">30/页</option>
+          <option :value="50">50/页</option>
+          <option :value="100">100/页</option>
+          <option :value="200">200/页</option>
+        </select>
+        <button
+          type="button"
+          class="tc-tool-btn tc-mini-btn"
+          :class="{ active: appStore.settings.showUsageCount }"
+          title="显示使用次数"
+          @click="appStore.settings.showUsageCount = !appStore.settings.showUsageCount"
+        >
+          <i class="fa-solid fa-chart-simple"></i>
+        </button>
       </div>
 
       <!-- 批量编辑工具栏 -->
@@ -495,7 +617,6 @@ async function handleFileImport(ev: Event) {
           </button>
         </div>
 
-        <!-- 批量加/删标签选择器 -->
         <div v-if="batchTagAction" class="tc-tag-popover">
           <div v-if="flattenedTags.length > 0" class="tc-tag-popover-chips">
             <button
@@ -524,7 +645,7 @@ async function handleFileImport(ev: Event) {
         </div>
       </div>
 
-      <!-- N 级层级标签栏 -->
+      <!-- N 级层级标签栏（支持同级拖拽排序） -->
       <div v-if="rootTags.length > 0" class="tc-tags-section">
         <div class="tc-tags-row">
           <button
@@ -540,7 +661,15 @@ async function handleFileImport(ev: Event) {
             :key="tag.id"
             type="button"
             class="tc-tag-chip"
-            :class="{ active: activeRootId === tag.id }"
+            :class="{
+              active: activeRootId === tag.id,
+              'drag-over': dragOverTagId === tag.id,
+            }"
+            draggable="true"
+            @dragstart="onTagDragStart(tag.id, $event)"
+            @dragover.prevent="onTagDragOver(tag.id)"
+            @drop.prevent="onTagDrop(tag.id)"
+            @dragend="onTagDragEnd"
             @click="handleClickRootTag(tag.id)"
           >
             <span>{{ tag.name }}</span>
@@ -582,7 +711,15 @@ async function handleFileImport(ev: Event) {
             :key="sub.id"
             type="button"
             class="tc-tag-chip sub"
-            :class="{ active: activeTagId === sub.id }"
+            :class="{
+              active: activeTagId === sub.id,
+              'drag-over': dragOverTagId === sub.id,
+            }"
+            draggable="true"
+            @dragstart="onTagDragStart(sub.id, $event)"
+            @dragover.prevent="onTagDragOver(sub.id)"
+            @drop.prevent="onTagDrop(sub.id)"
+            @dragend="onTagDragEnd"
             @click="handleClickSubTag(sub.id)"
           >
             <span>{{ sub.name }}</span>
@@ -593,12 +730,12 @@ async function handleFileImport(ev: Event) {
 
       <!-- 主题列表 -->
       <div class="tc-theme-list">
-        <div v-if="filteredThemes.length === 0" class="tc-empty">
+        <div v-if="displayedThemes.length === 0" class="tc-empty">
           暂无匹配美化
         </div>
 
         <div
-          v-for="theme in filteredThemes"
+          v-for="theme in displayedThemes"
           :key="theme.name"
           class="tc-theme-item"
           :class="{
@@ -620,6 +757,12 @@ async function handleFileImport(ev: Event) {
             <div class="tc-theme-info">
               <div class="tc-theme-name-line">
                 <span class="tc-theme-name" :title="theme.name">{{ theme.name }}</span>
+                <span
+                  v-if="appStore.settings.showUsageCount && (appStore.settings.usageCounts[theme.name] || 0) > 0"
+                  class="tc-usage-badge"
+                >
+                  {{ appStore.settings.usageCounts[theme.name] }}
+                </span>
                 <span v-if="appStore.recentlyAdded.includes(theme.name)" class="tc-pill-new">新</span>
               </div>
               <div v-if="getTagsForTheme(theme.name).length > 0" class="tc-inline-tags">
@@ -689,7 +832,6 @@ async function handleFileImport(ev: Event) {
             </div>
           </div>
 
-          <!-- 内联快速打标签抽屉 -->
           <div v-if="!isBatchMode && editingTagTheme === theme.name" class="tc-tag-popover" @click.stop>
             <div v-if="flattenedTags.length > 0" class="tc-tag-popover-chips">
               <button
@@ -723,6 +865,47 @@ async function handleFileImport(ev: Event) {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 分页栏 -->
+      <div v-if="appStore.settings.listMode === 'page' && totalPages > 1" class="tc-pagination">
+        <button
+          type="button"
+          class="tc-icon-btn"
+          :disabled="currentPage <= 1"
+          title="首页"
+          @click="currentPage = 1"
+        >
+          <i class="fa-solid fa-angles-left"></i>
+        </button>
+        <button
+          type="button"
+          class="tc-icon-btn"
+          :disabled="currentPage <= 1"
+          title="上一页"
+          @click="currentPage--"
+        >
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <span class="tc-page-text">{{ currentPage }} / {{ totalPages }}</span>
+        <button
+          type="button"
+          class="tc-icon-btn"
+          :disabled="currentPage >= totalPages"
+          title="下一页"
+          @click="currentPage++"
+        >
+          <i class="fa-solid fa-chevron-right"></i>
+        </button>
+        <button
+          type="button"
+          class="tc-icon-btn"
+          :disabled="currentPage >= totalPages"
+          title="末页"
+          @click="currentPage = totalPages"
+        >
+          <i class="fa-solid fa-angles-right"></i>
+        </button>
       </div>
     </div>
   </div>

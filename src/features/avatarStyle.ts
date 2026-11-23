@@ -1,5 +1,6 @@
 import { watch } from 'vue';
 import { getMainDoc, showToast } from '../bridge/host';
+import { getCurrentCharacter, onSTEvent } from '../bridge/st-api';
 import { appStore } from '../store/appStore';
 import { resolveOverrideUrl } from './avatarGallery';
 
@@ -19,8 +20,12 @@ export function applyAvatarStyles(): void {
   const cfg = appStore.settings.avatar;
   const rules: string[] = [];
 
-  // 1. 图库视觉覆盖（独立于大小/裁剪开关，始终生效）
-  const userOverrideUrl = resolveOverrideUrl('__user__');
+  // 1. 图库视觉覆盖（独立于大小/裁剪开关，始终生效；当前角色绑定的用户头像优先于全局用户头像）
+  const activeChar = getCurrentCharacter();
+  const charBoundUserUrl = activeChar?.avatar
+    ? resolveOverrideUrl(`__user_char__:${activeChar.avatar}`)
+    : '';
+  const userOverrideUrl = charBoundUserUrl || resolveOverrideUrl('__user__');
   if (userOverrideUrl) {
     rules.push(`
       #chat .mes[is_user="true"] .avatar img,
@@ -32,7 +37,7 @@ export function applyAvatarStyles(): void {
   }
 
   for (const [key] of Object.entries(cfg.avatarOverrides || {})) {
-    if (!key || key === '__user__') continue;
+    if (!key || key === '__user__' || key.startsWith('__user_char__:')) continue;
     const url = resolveOverrideUrl(key);
     if (!url) continue;
     const encoded = escapeAttrValue(encodeURIComponent(key));
@@ -251,6 +256,24 @@ export function startAvatarFeature(): () => void {
   );
 
   const doc = getMainDoc();
+
+  // 禁用点击聊天头像放大预览（捕获阶段拦截）
+  const onCaptureAvatarClick = (e: Event) => {
+    if (!appStore.settings.avatar.disableAvatarZoom) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest('#chat .mes .avatar')) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+  doc.addEventListener('click', onCaptureAvatarClick, true);
+
+  // 切换聊天角色时刷新角色绑定的用户头像覆盖
+  const unsubChatChanged = onSTEvent('CHAT_CHANGED', () => {
+    setTimeout(applyAvatarStyles, 60);
+  });
+
   const onDocClick = (e: Event) => {
     const target = e.target as HTMLElement | null;
     if (!target) return;
@@ -270,6 +293,8 @@ export function startAvatarFeature(): () => void {
   return () => {
     clearInterval(wandTimer);
     stopWatch();
+    unsubChatChanged();
+    doc.removeEventListener('click', onCaptureAvatarClick, true);
     doc.removeEventListener('click', onDocClick);
     doc.getElementById(STYLE_ELEMENT_ID)?.remove();
     doc.getElementById(WAND_MENU_ITEM_ID)?.remove();

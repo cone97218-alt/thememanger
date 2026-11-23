@@ -38,13 +38,20 @@ export function createDefaultSettings(): CompanionSettings {
       aspectRatio: 'auto',
       borderRadiusPx: -1,
       enableReplaceButton: true,
+      disableAvatarZoom: false,
       defaultCrop: { posX: 50, posY: 25, scale: 1 },
       perCharacterCrop: {},
       perCharacterGallery: {},
       userGallery: [],
+      perCharUserGallery: {},
       avatarOverrides: {},
     },
     autoSyncOnFocus: true,
+    sortBy: 'favorite-first',
+    listMode: 'scroll',
+    pageSize: 50,
+    usageCounts: {},
+    showUsageCount: false,
   };
 }
 
@@ -74,8 +81,10 @@ function mergeSettings(saved: Partial<CompanionSettings> | null): CompanionSetti
       perCharacterCrop: { ...(saved.avatar?.perCharacterCrop || {}) },
       perCharacterGallery: { ...(saved.avatar?.perCharacterGallery || {}) },
       userGallery: Array.isArray(saved.avatar?.userGallery) ? [...saved.avatar.userGallery] : [],
+      perCharUserGallery: { ...(saved.avatar?.perCharUserGallery || {}) },
       avatarOverrides: { ...(saved.avatar?.avatarOverrides || {}) },
     },
+    usageCounts: saved.usageCounts ? { ...saved.usageCounts } : {},
   };
 }
 
@@ -265,6 +274,7 @@ export function selectTheme(themeName: string): boolean {
   const ok = applyTheme(themeName);
   if (ok) {
     appStore.activeTheme = themeName;
+    appStore.settings.usageCounts[themeName] = (appStore.settings.usageCounts[themeName] || 0) + 1;
     clearRecentlyAdded(themeName);
     const boundBg = appStore.settings.backgroundBindings[themeName];
     if (boundBg) {
@@ -345,6 +355,20 @@ export function deleteTag(tagId: string): void {
     }
   });
   appStore.settings.tags = appStore.settings.tags.filter((t) => t.id !== tagId);
+}
+
+/**
+ * 同层级标签拖拽排序：将 sourceId 移动到 targetId 所在位置
+ */
+export function reorderTags(sourceId: string, targetId: string): void {
+  if (!sourceId || !targetId || sourceId === targetId) return;
+  const list = appStore.settings.tags;
+  const fromIdx = list.findIndex((t) => t.id === sourceId);
+  const toIdx = list.findIndex((t) => t.id === targetId);
+  if (fromIdx < 0 || toIdx < 0) return;
+  if ((list[fromIdx].parentId || null) !== (list[toIdx].parentId || null)) return;
+  const [moved] = list.splice(fromIdx, 1);
+  list.splice(toIdx, 0, moved);
 }
 
 export function getRootTags(): TagItem[] {

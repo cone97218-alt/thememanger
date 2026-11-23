@@ -106,6 +106,12 @@ export function resolveOverrideUrl(targetKey: string): string {
     const found = appStore.settings.avatar.userGallery.find((i) => i.id === overrideId);
     return resolveGalleryItemUrl(found);
   }
+  if (targetKey.startsWith('__user_char__:')) {
+    const charKey = targetKey.slice('__user_char__:'.length);
+    const list = appStore.settings.avatar.perCharUserGallery[charKey] || [];
+    const found = list.find((i) => i.id === overrideId);
+    return resolveGalleryItemUrl(found);
+  }
   const list = appStore.settings.avatar.perCharacterGallery[targetKey] || [];
   const found = list.find((i) => i.id === overrideId);
   return resolveGalleryItemUrl(found);
