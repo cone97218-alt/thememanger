@@ -274,7 +274,8 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
  * 切换主题并自动应用绑定的背景图
  */
 export function selectTheme(themeName: string): boolean {
-  const ok = applyTheme(themeName);
+  const themeObj = appStore.themes.find((t) => t.name === themeName);
+  const ok = applyTheme(themeName, themeObj);
   if (ok) {
     appStore.activeTheme = themeName;
     appStore.settings.usageCounts[themeName] = (appStore.settings.usageCounts[themeName] || 0) + 1;
