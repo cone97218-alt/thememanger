@@ -4,26 +4,6 @@ import { getMainDoc, getMainWin, getSTContext } from './host';
 export const SETTINGS_NAMESPACE = 'theme_companion_v3';
 
 let _bgModulePromise: Promise<any> | null = null;
-let _puModulePromise: Promise<any> | null = null;
-
-/**
- * 记录当前已在酒馆 power-user.js 私有 themes 闭包内的主题名集合
- * 存量主题直接走 100% 原生 #themes change，仅本会话免刷新新增主题才走 applyPowerUserSettings
- */
-const nativeKnownThemes = new Set<string>();
-let _knownThemesInitialized = false;
-
-function ensureNativeKnownThemes(): void {
-  if (_knownThemesInitialized) return;
-  const doc = getMainDoc();
-  const select = doc.querySelector<HTMLSelectElement>('#themes');
-  if (select && select.options.length > 0) {
-    Array.from(select.options).forEach((opt) => {
-      if (opt.value) nativeKnownThemes.add(opt.value);
-    });
-    _knownThemesInitialized = true;
-  }
-}
 
 async function getBgModule(): Promise<any> {
   if (!_bgModulePromise) {
@@ -32,15 +12,6 @@ async function getBgModule(): Promise<any> {
     _bgModulePromise = import(/* @vite-ignore */ `${base}/scripts/backgrounds.js`).catch(() => null);
   }
   return _bgModulePromise;
-}
-
-async function getPowerUserModule(): Promise<any> {
-  if (!_puModulePromise) {
-    const win = getMainWin();
-    const base = win.location?.origin || '';
-    _puModulePromise = import(/* @vite-ignore */ `${base}/scripts/power-user.js`).catch(() => null);
-  }
-  return _puModulePromise;
 }
 
 export function getRequestHeaders(): Record<string, string> {
@@ -113,7 +84,6 @@ export function getActiveThemeName(): string {
  * 从酒馆前端内存读取当前已加载的主题对象列表
  */
 export function getMemoryThemes(): ThemeObject[] {
-  ensureNativeKnownThemes();
   const ctx = getSTContext();
   const pu = getPowerUser();
   const win = getMainWin();
@@ -131,7 +101,6 @@ export function getMemoryThemes(): ThemeObject[] {
  * 直接向后端 /api/settings/get 拉取磁盘上最新的主题列表
  */
 export async function fetchThemesFromDisk(): Promise<ThemeObject[]> {
-  ensureNativeKnownThemes();
   const data = await apiPost<{ themes?: ThemeObject[] }>('settings/get', {});
   const list = Array.isArray(data?.themes) ? data.themes : [];
   return list.filter((t) => t && typeof t === 'object' && typeof t.name === 'string' && t.name.trim());
@@ -143,8 +112,6 @@ export async function fetchThemesFromDisk(): Promise<ThemeObject[]> {
 export function upsertThemeInSTMemory(theme: ThemeObject): void {
   const name = theme?.name?.trim();
   if (!name) return;
-
-  ensureNativeKnownThemes();
 
   const ctx = getSTContext();
   const pu = getPowerUser();
@@ -165,11 +132,9 @@ export function upsertThemeInSTMemory(theme: ThemeObject): void {
   patchArray(pu?.themes);
   patchArray(win.themes);
 
-  // 若宿主支持 baibaokuHydrateTheme，直接注入 power-user.js 私有 themes 闭包并标记为原生已知
   if (typeof win.baibaokuHydrateTheme === 'function') {
     try {
       win.baibaokuHydrateTheme(theme);
-      nativeKnownThemes.add(name);
     } catch (_) {}
   }
 
@@ -195,8 +160,6 @@ export function removeThemeFromSTMemory(name: string): void {
   const win = getMainWin();
   const doc = getMainDoc();
 
-  nativeKnownThemes.delete(name);
-
   const removeFromArray = (arr: any) => {
     if (!Array.isArray(arr)) return;
     const idx = arr.findIndex((t) => t && t.name === name);
@@ -215,69 +178,215 @@ export function removeThemeFromSTMemory(name: string): void {
   }
 }
 
-const COLOR_PICKER_MAP: Array<{ key: string; selector: string }> = [
-  { key: 'main_text_color', selector: '#main-text-color-picker' },
-  { key: 'italics_text_color', selector: '#italics-color-picker' },
-  { key: 'underline_text_color', selector: '#underline-color-picker' },
-  { key: 'quote_text_color', selector: '#quote-color-picker' },
-  { key: 'blur_tint_color', selector: '#blur-tint-color-picker' },
-  { key: 'chat_tint_color', selector: '#chat-tint-color-picker' },
-  { key: 'user_mes_blur_tint_color', selector: '#user-mes-blur-tint-color-picker' },
-  { key: 'bot_mes_blur_tint_color', selector: '#bot-mes-blur-tint-color-picker' },
-  { key: 'shadow_color', selector: '#shadow-color-picker' },
-  { key: 'border_color', selector: '#border-color-picker' },
+const THEME_COLOR_KEYS: Array<{ key: string; pickerId: string; cssVar: string }> = [
+  { key: 'main_text_color', pickerId: '#main-text-color-picker', cssVar: '--SmartThemeBodyColor' },
+  { key: 'italics_text_color', pickerId: '#italics-color-picker', cssVar: '--SmartThemeEmColor' },
+  { key: 'underline_text_color', pickerId: '#underline-color-picker', cssVar: '--SmartThemeUnderlineColor' },
+  { key: 'quote_text_color', pickerId: '#quote-color-picker', cssVar: '--SmartThemeQuoteColor' },
+  { key: 'blur_tint_color', pickerId: '#blur-tint-color-picker', cssVar: '--SmartThemeBlurTintColor' },
+  { key: 'chat_tint_color', pickerId: '#chat-tint-color-picker', cssVar: '--SmartThemeChatTintColor' },
+  {
+    key: 'user_mes_blur_tint_color',
+    pickerId: '#user-mes-blur-tint-color-picker',
+    cssVar: '--SmartThemeUserMesBlurTintColor',
+  },
+  {
+    key: 'bot_mes_blur_tint_color',
+    pickerId: '#bot-mes-blur-tint-color-picker',
+    cssVar: '--SmartThemeBotMesBlurTintColor',
+  },
+  { key: 'shadow_color', pickerId: '#shadow-color-picker', cssVar: '--SmartThemeShadowColor' },
+  { key: 'border_color', pickerId: '#border-color-picker', cssVar: '--SmartThemeBorderColor' },
 ];
 
 /**
- * 仅针对本会话免刷新新增（尚未进入 power-user.js 私有 themes 闭包）的主题：
- * 将主题属性合并进 power_user 并调用酒馆官方导出的 applyPowerUserSettings()
+ * 原版 theme-core.js 实战验证的全量权威固化引擎（Master Theme Enforcer）
+ * 直接在主窗口 document 与 power_user 上同步 10 项颜色、custom_css、CodeMirror、滑块、布尔开关及 TT 酒馆 chat_metadata.theme
  */
-async function applyDynamicThemeViaNativeModule(theme: ThemeObject): Promise<void> {
+export function enforceThemeMaster(cleanTheme: ThemeObject): void {
   const doc = getMainDoc();
+  const win = getMainWin();
   const ctx = getSTContext();
-  const puMod = await getPowerUserModule();
-  const pu = puMod?.power_user || getPowerUser();
+  const pu = getPowerUser();
+  const rootStyle = doc.documentElement.style;
 
   if (pu) {
-    for (const [k, v] of Object.entries(theme)) {
-      if (k !== '_xia' && v !== undefined) {
-        pu[k] = v;
+    pu.theme = cleanTheme.name;
+  }
+
+  // 1. 同步 custom_css 至内存、编辑器（含 CodeMirror）与 <style id="custom-style">
+  const customCss = typeof cleanTheme.custom_css === 'string' ? cleanTheme.custom_css : '';
+  if (pu) {
+    pu.custom_css = customCss;
+  }
+  const editorEl = doc.querySelector<any>('#customCSS, #style_custom_content, #custom_style');
+  if (editorEl) {
+    editorEl.value = customCss;
+    if (editorEl.CodeMirror && typeof editorEl.CodeMirror.setValue === 'function') {
+      editorEl.CodeMirror.setValue(customCss);
+    } else if (win.jQuery) {
+      try {
+        const cm = win.jQuery(editorEl).data('codemirror');
+        if (cm && typeof cm.setValue === 'function') cm.setValue(customCss);
+      } catch (_) {}
+    }
+  }
+  let customStyleTag = doc.getElementById('custom-style') as HTMLStyleElement | null;
+  if (!customStyleTag) {
+    customStyleTag = doc.createElement('style');
+    customStyleTag.setAttribute('type', 'text/css');
+    customStyleTag.setAttribute('id', 'custom-style');
+    doc.head.appendChild(customStyleTag);
+  }
+  customStyleTag.innerHTML = customCss;
+
+  // 2. 同步 10 项主题色至 CSS 变量、取色器属性、复选框 RGBA 与 meta[name=theme-color]
+  for (const { key, pickerId, cssVar } of THEME_COLOR_KEYS) {
+    const col = cleanTheme[key];
+    if (typeof col === 'string' && col) {
+      if (pu) pu[key] = col;
+      try {
+        rootStyle.setProperty(cssVar, col);
+      } catch (_) {}
+
+      const picker = doc.querySelector<any>(pickerId);
+      if (picker) {
+        try {
+          picker.setAttribute('color', col);
+          if ('rgba' in picker) picker.rgba = col;
+        } catch (_) {}
+      }
+
+      if (key === 'main_text_color' && col.includes('(')) {
+        try {
+          const parts = col.split('(')[1].split(')')[0].split(',');
+          if (parts.length >= 4) {
+            rootStyle.setProperty('--SmartThemeCheckboxBgColorR', parts[0].trim());
+            rootStyle.setProperty('--SmartThemeCheckboxBgColorG', parts[1].trim());
+            rootStyle.setProperty('--SmartThemeCheckboxBgColorB', parts[2].trim());
+            rootStyle.setProperty('--SmartThemeCheckboxBgColorA', parts[3].trim());
+          }
+        } catch (_) {}
+      }
+
+      if (key === 'blur_tint_color') {
+        try {
+          const metaThemeColor = doc.querySelector('meta[name=theme-color]');
+          if (metaThemeColor) metaThemeColor.setAttribute('content', col);
+        } catch (_) {}
       }
     }
-    pu.theme = theme.name;
   }
 
-  // 同步颜色选择器（触发酒馆原生 applyThemeColor 管道）
-  for (const { key, selector } of COLOR_PICKER_MAP) {
-    const val = theme[key];
-    if (typeof val === 'string' && val) {
-      const el = doc.querySelector<HTMLElement>(selector);
-      if (el) {
-        el.setAttribute('color', val);
-        el.dispatchEvent(new CustomEvent('change', { detail: { rgba: val } }));
+  // 3. 同步聊天宽度、字号、模糊度、阴影宽度
+  if (cleanTheme.chat_width !== undefined) {
+    const widthVal = Number(cleanTheme.chat_width) || 50;
+    if (pu) pu.chat_width = widthVal;
+    rootStyle.setProperty('--sheldWidth', `${widthVal}vw`);
+    const slider = doc.querySelector<HTMLInputElement>('#chat_width_slider');
+    if (slider) slider.value = String(widthVal);
+    const counter = doc.querySelector<HTMLInputElement>('#chat_width_slider_counter');
+    if (counter) counter.value = String(widthVal);
+  }
+  if (cleanTheme.font_scale !== undefined) {
+    const fontVal = Number(cleanTheme.font_scale) || 1;
+    if (pu) pu.font_scale = fontVal;
+    rootStyle.setProperty('--sheldFontScale', `${fontVal}`);
+    rootStyle.setProperty('--fontScale', String(fontVal));
+    const slider = doc.querySelector<HTMLInputElement>('#font_scale');
+    if (slider) slider.value = String(fontVal);
+    const counter = doc.querySelector<HTMLInputElement>('#font_scale_counter');
+    if (counter) counter.value = String(fontVal);
+  }
+  if (cleanTheme.blur_strength !== undefined) {
+    const parsedBlur = Number(cleanTheme.blur_strength);
+    const blurVal = Number.isFinite(parsedBlur) ? Math.max(0, parsedBlur) : 10;
+    if (pu) pu.blur_strength = blurVal;
+    rootStyle.setProperty('--sheldBlur', `${blurVal}px`);
+    rootStyle.setProperty('--blurStrength', String(blurVal));
+    const slider = doc.querySelector<HTMLInputElement>('#blur_strength');
+    if (slider) slider.value = String(blurVal);
+    const counter = doc.querySelector<HTMLInputElement>('#blur_strength_counter');
+    if (counter) counter.value = String(blurVal);
+  }
+  if (cleanTheme.shadow_width !== undefined) {
+    const parsedShadow = Number(cleanTheme.shadow_width);
+    const shadowVal = Number.isFinite(parsedShadow) ? Math.max(0, parsedShadow) : 2;
+    if (pu) pu.shadow_width = shadowVal;
+    rootStyle.setProperty('--shadowWidth', String(shadowVal));
+    const slider = doc.querySelector<HTMLInputElement>('#shadow_width');
+    if (slider) slider.value = String(shadowVal);
+    const counter = doc.querySelector<HTMLInputElement>('#shadow_width_counter');
+    if (counter) counter.value = String(shadowVal);
+  }
+
+  // 4. 同步布尔开关与 body class
+  const boolFlags: Array<{ key: string; selector: string; bodyClass: string }> = [
+    { key: 'fast_ui_mode', selector: '#fast_ui_mode', bodyClass: 'fast-ui' },
+    { key: 'waifuMode', selector: '#waifuMode', bodyClass: 'waifuMode' },
+    { key: 'noShadows', selector: '#noShadows', bodyClass: 'noShadows' },
+    { key: 'reduced_motion', selector: '#reduced_motion', bodyClass: 'reduced-motion' },
+    { key: 'compact_input_area', selector: '#compact_input_area', bodyClass: 'compact-input' },
+  ];
+  for (const { key, selector, bodyClass } of boolFlags) {
+    if (cleanTheme[key] !== undefined) {
+      const enabled = Boolean(cleanTheme[key]);
+      if (pu) pu[key] = enabled;
+      const el = doc.querySelector<HTMLInputElement>(selector);
+      if (el) el.checked = enabled;
+      doc.body.classList.toggle(bodyClass, enabled);
+    }
+  }
+
+  const extraKeys = [
+    'avatar_style',
+    'chat_display',
+    'toastr_position',
+    'timer_enabled',
+    'timestamps_enabled',
+    'timestamp_model_icon',
+    'mesIDDisplay_enabled',
+    'hideChatAvatars_enabled',
+    'message_token_count_enabled',
+    'expand_message_actions',
+    'enableZenSliders',
+    'enableLabMode',
+    'hotswap_enabled',
+    'bogus_folders',
+    'zoomed_avatar_magnification',
+    'show_swipe_num_all_messages',
+    'click_to_edit',
+    'media_display',
+  ];
+  if (pu) {
+    for (const k of extraKeys) {
+      if (cleanTheme[k] !== undefined) {
+        pu[k] = cleanTheme[k];
       }
     }
   }
 
-  // 调用酒馆官方导出的 applyPowerUserSettings() 执行全套原生渲染（CSS、字号、聊天宽度、头像样式、开关等）
-  if (typeof puMod?.applyPowerUserSettings === 'function') {
-    puMod.applyPowerUserSettings();
-  }
-  if (typeof puMod?.applyStylePins === 'function') {
-    puMod.applyStylePins();
-  }
-
-  if (typeof ctx?.saveSettingsDebounced === 'function') {
-    ctx.saveSettingsDebounced();
-  }
+  // 5. 同步 TT 酒馆 / ST 的 chat_metadata.theme 并持久化保存
+  try {
+    if (ctx?.chat_metadata) {
+      ctx.chat_metadata.theme = cleanTheme.name;
+      if (typeof ctx.saveMetadataDebounced === 'function') ctx.saveMetadataDebounced();
+    }
+    if (ctx?.chatMetadata) {
+      ctx.chatMetadata.theme = cleanTheme.name;
+    }
+    if (typeof ctx?.saveSettingsDebounced === 'function') {
+      ctx.saveSettingsDebounced();
+    }
+  } catch (_) {}
 }
 
 /**
- * 切换主题（存量主题 100% 走原生 #themes change；免刷新新推送主题走酒馆官方 applyPowerUserSettings）
+ * 切换主题：排他性更新原生 #themes 下拉框 + 触发原生 change + 执行 Master Theme Enforcer
+ * 若传入的 themeObj 缺少完整字段，自动从后端拉取完整主题对象后立即补齐应用
  */
 export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
-  ensureNativeKnownThemes();
-
+  if (!themeName) return false;
   const doc = getMainDoc();
   const win = getMainWin();
   const select = doc.querySelector<HTMLSelectElement>('#themes');
@@ -287,7 +396,7 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
     upsertThemeInSTMemory(themeObj);
   }
 
-  // 排他性选中目标 <option>，确保酒馆 $(this).find(':selected').val() 精确命中
+  // 排他性选中目标 <option>，避免 jQuery find(':selected') 命中旧项
   let targetOpt: HTMLOptionElement | null = null;
   Array.from(select.options).forEach((o) => {
     if (o.value === themeName) {
@@ -299,7 +408,6 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
   });
 
   if (!targetOpt) {
-    if (!themeObj) return false;
     targetOpt = doc.createElement('option');
     targetOpt.value = themeName;
     targetOpt.textContent = themeName;
@@ -309,6 +417,16 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
   targetOpt.selected = true;
   targetOpt.setAttribute('selected', 'selected');
   select.value = themeName;
+  const optIdx = Array.from(select.options).indexOf(targetOpt);
+  if (optIdx !== -1) select.selectedIndex = optIdx;
+
+  // 先写入初始 custom_css，再触发原生 change，最后执行 Master Theme Enforcer 双重固化
+  const hasFullData = Boolean(
+    themeObj && (themeObj.main_text_color || typeof themeObj.custom_css === 'string'),
+  );
+  if (hasFullData && themeObj) {
+    enforceThemeMaster(themeObj);
+  }
 
   if (win.jQuery) {
     try {
@@ -320,9 +438,17 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
     select.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // 若该主题是本会话免刷新新推送/导入的（不在启动时的原生闭包内），走酒馆官方 applyPowerUserSettings
-  if (themeObj && !nativeKnownThemes.has(themeName)) {
-    void applyDynamicThemeViaNativeModule(themeObj);
+  if (hasFullData && themeObj) {
+    enforceThemeMaster(themeObj);
+  } else {
+    // 若内存里只有名称没有完整属性，异步从磁盘拉取完整主题对象并立即固化
+    void fetchThemesFromDisk().then((diskThemes) => {
+      const full = diskThemes.find((t) => t.name === themeName);
+      if (full) {
+        upsertThemeInSTMemory(full);
+        enforceThemeMaster(full);
+      }
+    });
   }
 
   return true;
