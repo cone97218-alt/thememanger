@@ -1,9 +1,14 @@
 import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
 import { markThemeSavedByNative } from './st-api';
-import { appStore, ingestTheme, syncThemesWithDisk } from '../store/appStore';
+import { appStore, assignThemeToTagByName, createTag, ingestTheme, syncThemesWithDisk } from '../store/appStore';
 
 const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
+
+interface StVaultTagsSyncedDetail {
+  tagPaths?: string[];
+  themeTags?: Record<string, string[]>;
+}
 
 /**
  * 启动酒馆匣实时推送监听 & 切回窗口静默 Diff 同步
@@ -36,6 +41,29 @@ export function startSyncEngine(): () => void {
   };
 
   doc.addEventListener('stvault:themePushed', onStVaultPushed);
+
+  // 1.5 监听「酒馆匣互联」派发的全量双向标签同步事件
+  const onStVaultTagsSynced = (ev: Event) => {
+    const customEv = ev as CustomEvent<StVaultTagsSyncedDetail>;
+    const detail = customEv?.detail;
+    if (!detail) return;
+    if (Array.isArray(detail.tagPaths)) {
+      detail.tagPaths.forEach((p) => {
+        if (p && typeof p === 'string') createTag(p);
+      });
+    }
+    if (detail.themeTags && typeof detail.themeTags === 'object') {
+      const existingThemeNames = new Set(appStore.themes.map((t) => t.name));
+      Object.entries(detail.themeTags).forEach(([tName, paths]) => {
+        if (!existingThemeNames.has(tName) || !Array.isArray(paths)) return;
+        paths.forEach((p) => {
+          if (p && typeof p === 'string') assignThemeToTagByName(tName, p);
+        });
+      });
+    }
+  };
+
+  doc.addEventListener('stvault:tagsSynced', onStVaultTagsSynced);
 
   // 2. 切回前台/窗口聚焦时的低开销静默 Diff 同步（延迟至空闲帧执行，不阻塞切窗）
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -103,6 +131,7 @@ export function startSyncEngine(): () => void {
     if (idleTimer) clearTimeout(idleTimer);
     selectObserver?.disconnect();
     doc.removeEventListener('stvault:themePushed', onStVaultPushed);
+    doc.removeEventListener('stvault:tagsSynced', onStVaultTagsSynced);
     doc.removeEventListener('visibilitychange', onVisibilityChange);
     win.removeEventListener('focus', maybeSilentSync);
     selectEl?.removeEventListener('change', syncSelectOptionsToStore);
