@@ -1,0 +1,13 @@
+{
+  "type": "script",
+  "id": "st-theme-companion-hotloader",
+  "name": "美化管理伴侣 v3（热更新）",
+  "enabled": true,
+  "info": "自动加载最新版美化管理伴侣（Vue 3 轻量化重构版），支持酒馆匣实时推送联动、日夜切换、背景/角色绑定与头像裁剪管理。",
+  "content": "const REPO = 'cone97218-alt/thememanger';\nconst BRANCH = 'main';\nconst FILE = 'dist/theme-companion.js';\n\n(async () => {\n  const tryLoad = async (url) => {\n    const res = await fetch(url, { cache: 'no-store' });\n    if (!res.ok) throw new Error(`HTTP ${res.status}`);\n    const code = await res.text();\n    (0, eval)(code);\n  };\n\n  try {\n    await tryLoad(`https://raw.githubusercontent.com/${REPO}/${BRANCH}/${FILE}?t=${Date.now()}`);\n    return;\n  } catch (_) {}\n\n  try {\n    const meta = await fetch(`https://api.github.com/repos/${REPO}/commits/${BRANCH}`, {\n      cache: 'no-store',\n    }).then((r) => r.json());\n    const ref = meta?.sha || BRANCH;\n    for (const host of ['cdn.jsdelivr.net', 'fastly.jsdelivr.net']) {\n      try {\n        await tryLoad(`https://${host}/gh/${REPO}@${ref}/${FILE}`);\n        return;\n      } catch (_) {}\n    }\n  } catch (_) {}\n})();",
+  "button": {
+    "enabled": false,
+    "buttons": []
+  },
+  "data": {}
+}

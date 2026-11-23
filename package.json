@@ -1,0 +1,22 @@
+{
+  "name": "st-theme-companion",
+  "version": "3.0.0",
+  "private": true,
+  "description": "SillyTavern 轻量化美化管理伴侣（Vue 3 + 酒馆助手热更新脚本，支持酒馆匣实时联动）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0",
+    "vite-plugin-css-injected-by-js": "^3.5.2",
+    "vue-tsc": "^2.2.8"
+  }
+}

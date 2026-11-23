@@ -1,0 +1,73 @@
+import type { StVaultThemePushedDetail } from '../types';
+import { getMainDoc, getMainWin, showToast } from './host';
+import { appStore, ingestTheme, syncThemesWithDisk } from '../store/appStore';
+
+const FOCUS_SYNC_COOLDOWN_MS = 30_000;
+
+/**
+ * 启动酒馆匣实时推送监听 & 切回窗口静默 Diff 同步
+ * 返回清理函数，供热重载卸载时调用
+ */
+export function startSyncEngine(): () => void {
+  const doc = getMainDoc();
+  const win = getMainWin();
+
+  // 1. 监听「酒馆匣互联」派发的实时推送事件（0ms 延迟）
+  const onStVaultPushed = (ev: Event) => {
+    const customEv = ev as CustomEvent<StVaultThemePushedDetail>;
+    const detail = customEv?.detail;
+    if (!detail || !detail.theme || !detail.theme.name) return;
+
+    ingestTheme(detail.theme, {
+      tags: detail.tags,
+      category: detail.category,
+      bg: detail.bg,
+      autoApply: detail.autoApply,
+    });
+
+    const tagInfo = detail.tags?.length
+      ? `（已自动归类：${detail.tags.join('、')}）`
+      : detail.category
+        ? `（已自动归类：${detail.category}）`
+        : '';
+
+    showToast('success', `收到酒馆匣推送的美化「${detail.theme.name}」${tagInfo}`);
+  };
+
+  doc.addEventListener('stvault:themePushed', onStVaultPushed);
+
+  // 2. 切回前台/窗口聚焦时的带冷却静默 Diff 同步（兜底手动往文件夹拖文件的情况）
+  const maybeSilentSync = () => {
+    if (!appStore.settings.autoSyncOnFocus) return;
+    if (doc.visibilityState === 'hidden') return;
+    const elapsed = Date.now() - appStore.lastSyncAt;
+    if (elapsed < FOCUS_SYNC_COOLDOWN_MS) return;
+    syncThemesWithDisk({ silent: true });
+  };
+
+  const onVisibilityChange = () => {
+    if (doc.visibilityState === 'visible') {
+      maybeSilentSync();
+    }
+  };
+
+  doc.addEventListener('visibilitychange', onVisibilityChange);
+  win.addEventListener('focus', maybeSilentSync);
+
+  // 3. 监听酒馆原生 #themes 下拉框变化（如果用户从其他地方切换了主题，保持 activeTheme 同步）
+  const onNativeThemeChange = () => {
+    const sel = doc.querySelector<HTMLSelectElement>('#themes');
+    if (sel && sel.value && sel.value !== appStore.activeTheme) {
+      appStore.activeTheme = sel.value;
+    }
+  };
+  const selectEl = doc.querySelector<HTMLSelectElement>('#themes');
+  selectEl?.addEventListener('change', onNativeThemeChange);
+
+  return () => {
+    doc.removeEventListener('stvault:themePushed', onStVaultPushed);
+    doc.removeEventListener('visibilitychange', onVisibilityChange);
+    win.removeEventListener('focus', maybeSilentSync);
+    selectEl?.removeEventListener('change', onNativeThemeChange);
+  };
+}
