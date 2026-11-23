@@ -4,11 +4,18 @@ import {
   appStore,
   createTag,
   deleteTheme,
+  getChildTags,
+  getFlattenedTagTree,
+  getRootTags,
+  getTagAncestry,
   getTagsForTheme,
+  getTagThemeCount,
+  getTagThemeSet,
   ingestTheme,
   isFavorite,
   renameTheme,
   selectTheme,
+  setThemeBackgroundBinding,
   syncThemesWithDisk,
   toggleFavorite,
   toggleThemeTag,
@@ -16,14 +23,30 @@ import {
 import { saveThemeToDisk } from '../bridge/st-api';
 import { showToast } from '../bridge/host';
 import { quickToggleDayNight } from '../features/autoTheme';
+import { startBackgroundBinding } from '../features/bgBinding';
 import type { ThemeObject } from '../types';
 
 const searchQuery = ref('');
 const onlyFavorites = ref(false);
-const activeTagId = ref<string>(''); // '' = 全部, '__untagged__' = 未分类
+const activeTagId = ref<string>(''); // '' = 全部, '__untagged__' = 未分类, 或任意层级 tag.id
 const editingTagTheme = ref<string | null>(null);
 const newTagInput = ref('');
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const rootTags = computed(() => getRootTags());
+const flattenedTags = computed(() => getFlattenedTagTree());
+
+const activeAncestry = computed(() => {
+  if (!activeTagId.value || activeTagId.value === '__untagged__') return [];
+  return getTagAncestry(activeTagId.value);
+});
+
+const activeRootId = computed(() => activeAncestry.value[0]?.id || '');
+
+const currentSubtags = computed(() => {
+  if (!activeTagId.value || activeTagId.value === '__untagged__') return [];
+  return getChildTags(activeTagId.value);
+});
 
 const filteredThemes = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
@@ -33,19 +56,22 @@ const filteredThemes = computed(() => {
   const taggedSet = new Set<string>();
   appStore.settings.tags.forEach((t) => t.themes.forEach((n) => taggedSet.add(n)));
 
-  let list = appStore.themes.filter((t) => {
+  const activeDescSet =
+    activeTagId.value && activeTagId.value !== '__untagged__'
+      ? getTagThemeSet(activeTagId.value)
+      : null;
+
+  const list = appStore.themes.filter((t) => {
     if (q && !t.name.toLowerCase().includes(q)) return false;
     if (onlyFavorites.value && !favSet.has(t.name)) return false;
     if (activeTagId.value === '__untagged__') {
       if (taggedSet.has(t.name)) return false;
-    } else if (activeTagId.value) {
-      const tag = appStore.settings.tags.find((x) => x.id === activeTagId.value);
-      if (!tag || !tag.themes.includes(t.name)) return false;
+    } else if (activeDescSet) {
+      if (!activeDescSet.has(t.name)) return false;
     }
     return true;
   });
 
-  // 排序：新推送 > 收藏 > 名称
   return [...list].sort((a, b) => {
     const aRec = recentSet.has(a.name) ? 1 : 0;
     const bRec = recentSet.has(b.name) ? 1 : 0;
@@ -67,15 +93,49 @@ function handleManualSync() {
   syncThemesWithDisk({ silent: false });
 }
 
+function handleRandomTheme() {
+  const pool = filteredThemes.value;
+  if (pool.length === 0) return;
+  const others = pool.length > 1 ? pool.filter((t) => t.name !== appStore.activeTheme) : pool;
+  const picked = others[Math.floor(Math.random() * others.length)];
+  if (picked) selectTheme(picked.name);
+}
+
+function handleClickRootTag(tagId: string) {
+  if (activeTagId.value === tagId) {
+    activeTagId.value = '';
+  } else {
+    activeTagId.value = tagId;
+  }
+}
+
+function handleClickSubTag(tagId: string) {
+  if (activeTagId.value === tagId) {
+    const chain = activeAncestry.value;
+    activeTagId.value = chain.length > 1 ? chain[chain.length - 2].id : '';
+  } else {
+    activeTagId.value = tagId;
+  }
+}
+
+function handleBgLinkClick(themeName: string) {
+  if (appStore.settings.backgroundBindings[themeName]) {
+    setThemeBackgroundBinding(themeName, '');
+    showToast('info', '已解除背景绑定');
+  } else {
+    startBackgroundBinding(themeName);
+  }
+}
+
 function handleRename(themeName: string) {
-  const next = window.prompt(`重命名美化「${themeName}」为：`, themeName);
+  const next = window.prompt('重命名', themeName);
   if (next && next.trim() && next.trim() !== themeName) {
     renameTheme(themeName, next.trim());
   }
 }
 
 async function handleDelete(themeName: string) {
-  if (!window.confirm(`确定要删除美化「${themeName}」吗？此操作将删除磁盘上的主题文件。`)) {
+  if (!window.confirm(`确定删除「${themeName}」？`)) {
     return;
   }
   try {
@@ -120,39 +180,42 @@ async function handleFileImport(ev: Event) {
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
         if (!item || typeof item !== 'object') continue;
-        item.name = (typeof item.name === 'string' && item.name.trim()) || (list.length > 1 ? `${baseName}_${i + 1}` : baseName);
+        item.name =
+          (typeof item.name === 'string' && item.name.trim()) ||
+          (list.length > 1 ? `${baseName}_${i + 1}` : baseName);
         await saveThemeToDisk(item);
         ingestTheme(item);
         okCount++;
       }
     } catch (err: any) {
-      showToast('error', `导入 ${file.name} 失败：${err?.message || err}`);
+      showToast('error', `导入失败：${err?.message || err}`);
     }
   }
   if (okCount > 0) {
-    showToast('success', `成功导入 ${okCount} 个美化`);
+    showToast('success', `已导入 ${okCount} 个美化`);
   }
 }
 </script>
 
 <template>
   <div id="tc-panel" class="tc-panel">
-    <!-- 顶部标题栏 -->
+    <!-- 顶部标题栏（对齐原版结构） -->
     <div class="tc-header" @click="toggleCollapse">
       <div class="tc-header-left">
         <i class="fa-solid fa-palette tc-accent-icon"></i>
-        <span class="tc-title">美化管理伴侣</span>
+        <span class="tc-title">美化管理</span>
         <span class="tc-count-badge">{{ appStore.themes.length }}</span>
-        <span v-if="appStore.recentlyAdded.length > 0" class="tc-new-dot" title="有新同步的美化">
+        <span v-if="appStore.recentlyAdded.length > 0" class="tc-new-dot">
           +{{ appStore.recentlyAdded.length }}
         </span>
       </div>
 
       <div class="tc-header-right" @click.stop>
+        <div id="tc-native-buttons-slot" class="tc-native-slot"></div>
         <button
           type="button"
           class="tc-icon-btn"
-          title="一键切换日/夜配对美化"
+          title="日夜切换"
           @click="quickToggleDayNight"
         >
           <i class="fa-solid fa-circle-half-stroke"></i>
@@ -161,7 +224,7 @@ async function handleFileImport(ev: Event) {
           type="button"
           class="tc-icon-btn"
           :class="{ 'tc-spinning': appStore.isSyncing }"
-          title="同步磁盘/酒馆匣最新美化"
+          title="同步"
           @click="handleManualSync"
         >
           <i class="fa-solid fa-rotate"></i>
@@ -169,18 +232,10 @@ async function handleFileImport(ev: Event) {
         <button
           type="button"
           class="tc-icon-btn"
-          title="头像管理（替换/大小/位置裁剪）"
-          @click="appStore.showAvatarModal = true"
-        >
-          <i class="fa-solid fa-user-pen"></i>
-        </button>
-        <button
-          type="button"
-          class="tc-icon-btn"
-          title="设置（日夜切换 / 绑定 / 标签 / 迁移）"
+          title="设置"
           @click="appStore.showSettingsModal = true"
         >
-          <i class="fa-solid fa-sliders"></i>
+          <i class="fa-solid fa-gear"></i>
         </button>
         <i
           class="fa-solid fa-chevron-down tc-chevron"
@@ -192,7 +247,7 @@ async function handleFileImport(ev: Event) {
 
     <!-- 面板主体 -->
     <div v-show="!appStore.settings.collapsed" class="tc-body">
-      <!-- 搜索与快捷工具行 -->
+      <!-- 搜索与快捷操作行（纯图标，无冗余文字） -->
       <div class="tc-toolbar">
         <div class="tc-search-wrap">
           <i class="fa-solid fa-magnifying-glass tc-search-icon"></i>
@@ -200,14 +255,14 @@ async function handleFileImport(ev: Event) {
             v-model="searchQuery"
             type="search"
             class="tc-search-input"
-            placeholder="搜索美化名称..."
+            placeholder="搜索美化..."
           />
         </div>
         <button
           type="button"
           class="tc-tool-btn"
           :class="{ active: onlyFavorites }"
-          title="只看收藏"
+          title="收藏"
           @click="onlyFavorites = !onlyFavorites"
         >
           <i :class="onlyFavorites ? 'fa-solid fa-star' : 'fa-regular fa-star'"></i>
@@ -215,7 +270,15 @@ async function handleFileImport(ev: Event) {
         <button
           type="button"
           class="tc-tool-btn"
-          title="导入 JSON 美化文件"
+          title="随机"
+          @click="handleRandomTheme"
+        >
+          <i class="fa-solid fa-dice"></i>
+        </button>
+        <button
+          type="button"
+          class="tc-tool-btn"
+          title="导入"
           @click="triggerQuickImport"
         >
           <i class="fa-solid fa-file-import"></i>
@@ -230,47 +293,83 @@ async function handleFileImport(ev: Event) {
         />
       </div>
 
-      <!-- 轻量标签筛选栏 -->
-      <div v-if="appStore.settings.tags.length > 0" class="tc-tags-bar">
-        <button
-          type="button"
-          class="tc-tag-chip"
-          :class="{ active: activeTagId === '' }"
-          @click="activeTagId = ''"
-        >
-          全部
-        </button>
-        <button
-          v-for="tag in appStore.settings.tags"
-          :key="tag.id"
-          type="button"
-          class="tc-tag-chip"
-          :class="{ active: activeTagId === tag.id }"
-          @click="activeTagId = activeTagId === tag.id ? '' : tag.id"
-        >
-          {{ tag.name }}
-          <span class="tc-tag-num">{{ tag.themes.length }}</span>
-        </button>
-        <button
-          type="button"
-          class="tc-tag-chip"
-          :class="{ active: activeTagId === '__untagged__' }"
-          @click="activeTagId = activeTagId === '__untagged__' ? '' : '__untagged__'"
-        >
-          未分类
-        </button>
+      <!-- N 级层级标签栏 -->
+      <div v-if="rootTags.length > 0" class="tc-tags-section">
+        <!-- 一级标签 -->
+        <div class="tc-tags-row">
+          <button
+            type="button"
+            class="tc-tag-chip"
+            :class="{ active: activeTagId === '' }"
+            @click="activeTagId = ''"
+          >
+            全部
+          </button>
+          <button
+            v-for="tag in rootTags"
+            :key="tag.id"
+            type="button"
+            class="tc-tag-chip"
+            :class="{ active: activeRootId === tag.id }"
+            @click="handleClickRootTag(tag.id)"
+          >
+            <span>{{ tag.name }}</span>
+            <span class="tc-tag-num">{{ getTagThemeCount(tag.id) }}</span>
+          </button>
+          <button
+            type="button"
+            class="tc-tag-chip"
+            :class="{ active: activeTagId === '__untagged__' }"
+            @click="activeTagId = activeTagId === '__untagged__' ? '' : '__untagged__'"
+          >
+            未分类
+          </button>
+        </div>
+
+        <!-- 面包屑导航（存在子级或处于深层时显示） -->
+        <div v-if="activeAncestry.length > 0 && (currentSubtags.length > 0 || activeAncestry.length > 1)" class="tc-breadcrumb">
+          <button type="button" class="tc-crumb" @click="activeTagId = ''">
+            <i class="fa-solid fa-house"></i>
+          </button>
+          <template v-for="(node, idx) in activeAncestry" :key="node.id">
+            <i class="fa-solid fa-angle-right tc-crumb-sep"></i>
+            <button
+              type="button"
+              class="tc-crumb"
+              :class="{ active: idx === activeAncestry.length - 1 }"
+              @click="activeTagId = node.id"
+            >
+              {{ node.name }}
+            </button>
+          </template>
+        </div>
+
+        <!-- 当前层级子标签 -->
+        <div v-if="currentSubtags.length > 0" class="tc-tags-row tc-subtags-row">
+          <button
+            v-for="sub in currentSubtags"
+            :key="sub.id"
+            type="button"
+            class="tc-tag-chip sub"
+            :class="{ active: activeTagId === sub.id }"
+            @click="handleClickSubTag(sub.id)"
+          >
+            <span>{{ sub.name }}</span>
+            <span class="tc-tag-num">{{ getTagThemeCount(sub.id) }}</span>
+          </button>
+        </div>
       </div>
 
-      <!-- 主题列表 -->
+      <!-- 主题列表（原版紧凑扁平风格） -->
       <div class="tc-theme-list">
         <div v-if="filteredThemes.length === 0" class="tc-empty">
-          没有匹配的美化，试试清空搜索或点击右上角同步按钮
+          暂无匹配美化
         </div>
 
         <div
           v-for="theme in filteredThemes"
           :key="theme.name"
-          class="tc-theme-card"
+          class="tc-theme-item"
           :class="{
             active: appStore.activeTheme === theme.name,
             recent: appStore.recentlyAdded.includes(theme.name),
@@ -281,11 +380,6 @@ async function handleFileImport(ev: Event) {
               <div class="tc-theme-name-line">
                 <span class="tc-theme-name" :title="theme.name">{{ theme.name }}</span>
                 <span v-if="appStore.recentlyAdded.includes(theme.name)" class="tc-pill-new">新</span>
-                <i
-                  v-if="appStore.settings.backgroundBindings[theme.name]"
-                  class="fa-regular fa-image tc-bound-indicator"
-                  :title="`已绑定背景：${appStore.settings.backgroundBindings[theme.name]}`"
-                ></i>
               </div>
               <div v-if="getTagsForTheme(theme.name).length > 0" class="tc-inline-tags">
                 <span
@@ -302,19 +396,38 @@ async function handleFileImport(ev: Event) {
               <button
                 type="button"
                 class="tc-row-btn"
-                :class="{ starred: isFavorite(theme.name) }"
-                title="收藏 / 取消收藏"
-                @click="toggleFavorite(theme.name)"
+                title="标签"
+                @click="openTagEditor(theme.name)"
               >
-                <i :class="isFavorite(theme.name) ? 'fa-solid fa-star' : 'fa-regular fa-star'"></i>
+                <i class="fa-solid fa-tag"></i>
               </button>
               <button
                 type="button"
                 class="tc-row-btn"
-                title="管理标签"
-                @click="openTagEditor(theme.name)"
+                :class="{ linked: Boolean(appStore.settings.backgroundBindings[theme.name]) }"
+                :title="
+                  appStore.settings.backgroundBindings[theme.name]
+                    ? `解绑背景：${appStore.settings.backgroundBindings[theme.name]}`
+                    : '绑定背景'
+                "
+                @click="handleBgLinkClick(theme.name)"
               >
-                <i class="fa-solid fa-tag"></i>
+                <i
+                  :class="
+                    appStore.settings.backgroundBindings[theme.name]
+                      ? 'fa-solid fa-link-slash'
+                      : 'fa-solid fa-link'
+                  "
+                ></i>
+              </button>
+              <button
+                type="button"
+                class="tc-row-btn"
+                :class="{ starred: isFavorite(theme.name) }"
+                title="收藏"
+                @click="toggleFavorite(theme.name)"
+              >
+                <i :class="isFavorite(theme.name) ? 'fa-solid fa-star' : 'fa-regular fa-star'"></i>
               </button>
               <button
                 type="button"
@@ -327,7 +440,7 @@ async function handleFileImport(ev: Event) {
               <button
                 type="button"
                 class="tc-row-btn tc-danger"
-                title="删除美化"
+                title="删除"
                 @click="handleDelete(theme.name)"
               >
                 <i class="fa-solid fa-trash"></i>
@@ -335,18 +448,19 @@ async function handleFileImport(ev: Event) {
             </div>
           </div>
 
-          <!-- 内联快速打标签抽屉 -->
+          <!-- 内联快速打标签抽屉（支持层级缩进） -->
           <div v-if="editingTagTheme === theme.name" class="tc-tag-popover" @click.stop>
-            <div class="tc-tag-popover-chips">
+            <div v-if="flattenedTags.length > 0" class="tc-tag-popover-chips">
               <button
-                v-for="tag in appStore.settings.tags"
-                :key="tag.id"
+                v-for="node in flattenedTags"
+                :key="node.tag.id"
                 type="button"
                 class="tc-tag-chip small"
-                :class="{ active: tag.themes.includes(theme.name) }"
-                @click="toggleThemeTag(theme.name, tag.id)"
+                :class="{ active: node.tag.themes.includes(theme.name) }"
+                @click="toggleThemeTag(theme.name, node.tag.id)"
               >
-                {{ tag.name }}
+                <span v-if="node.depth > 0" class="tc-tag-indent">{{ '› '.repeat(node.depth) }}</span>
+                <span>{{ node.tag.name }}</span>
               </button>
             </div>
             <div class="tc-tag-add-row">
@@ -354,15 +468,16 @@ async function handleFileImport(ev: Event) {
                 v-model="newTagInput"
                 type="text"
                 class="tc-input-sm"
-                placeholder="新建标签名..."
+                placeholder="新标签（支持 父/子）"
                 @keyup.enter="handleCreateAndAssignTag(theme.name)"
               />
               <button
                 type="button"
                 class="tc-btn-sm"
+                title="添加"
                 @click="handleCreateAndAssignTag(theme.name)"
               >
-                添加
+                <i class="fa-solid fa-plus"></i>
               </button>
             </div>
           </div>

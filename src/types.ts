@@ -27,6 +27,7 @@ export interface ThemeObject {
 export interface TagItem {
   id: string;
   name: string;
+  parentId?: string | null;
   themes: string[];
 }
 
@@ -54,6 +55,13 @@ export interface AvatarCropRule {
   scale: number;
 }
 
+export interface AvatarGalleryItem {
+  id: string;
+  source: 'idb' | 'url';
+  url?: string;
+  name?: string;
+}
+
 export interface AvatarConfig {
   enabled: boolean;
   /** 全局头像宽度 (px, 0 表示跟随主题默认) */
@@ -68,6 +76,12 @@ export interface AvatarConfig {
   defaultCrop: AvatarCropRule;
   /** 按角色头像文件名单独覆盖的裁剪规则 */
   perCharacterCrop: Record<string, AvatarCropRule>;
+  /** 角色专属图库：charAvatar -> items */
+  perCharacterGallery: Record<string, AvatarGalleryItem[]>;
+  /** 全局用户图库 */
+  userGallery: AvatarGalleryItem[];
+  /** 头像视觉覆盖：key (charAvatar 或 '__user__') -> gallery item id */
+  avatarOverrides: Record<string, string>;
 }
 
 export interface CompanionSettings {

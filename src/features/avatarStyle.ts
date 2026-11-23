@@ -1,23 +1,117 @@
 import { watch } from 'vue';
 import { getMainDoc, showToast } from '../bridge/host';
 import { appStore } from '../store/appStore';
+import { resolveOverrideUrl } from './avatarGallery';
 
 const STYLE_ELEMENT_ID = 'tc-avatar-dynamic-style';
+const WAND_MENU_ITEM_ID = 'tc-wand-avatar-btn';
 
 function escapeAttrValue(val: string): string {
   return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 /**
- * 根据当前 avatar 配置生成并注入精准 CSS（大小、宽高比、圆角、位置裁剪与缩放）
+ * 根据当前 avatar 配置与图库覆盖生成并注入精准 CSS
  */
 export function applyAvatarStyles(): void {
   const doc = getMainDoc();
   let styleEl = doc.getElementById(STYLE_ELEMENT_ID) as HTMLStyleElement | null;
   const cfg = appStore.settings.avatar;
+  const rules: string[] = [];
 
-  if (!cfg.enabled) {
-    if (styleEl) styleEl.remove();
+  // 1. 图库视觉覆盖（独立于大小/裁剪开关，始终生效）
+  const userOverrideUrl = resolveOverrideUrl('__user__');
+  if (userOverrideUrl) {
+    rules.push(`
+      #chat .mes[is_user="true"] .avatar img,
+      #chat .mes[is_user="true"] .mesAvatarWrapper .avatar img {
+        content: url("${escapeAttrValue(userOverrideUrl)}") !important;
+        object-fit: cover !important;
+      }
+    `);
+  }
+
+  for (const [key] of Object.entries(cfg.avatarOverrides || {})) {
+    if (!key || key === '__user__') continue;
+    const url = resolveOverrideUrl(key);
+    if (!url) continue;
+    const encoded = escapeAttrValue(encodeURIComponent(key));
+    const raw = escapeAttrValue(key);
+    rules.push(`
+      #chat .mes[is_user="false"] .avatar img[src*="${encoded}"],
+      #chat .mes[is_user="false"] .avatar img[src*="${raw}"] {
+        content: url("${escapeAttrValue(url)}") !important;
+        object-fit: cover !important;
+      }
+    `);
+  }
+
+  // 2. 头像大小、比例、圆角与裁剪
+  if (cfg.enabled) {
+    const containerProps: string[] = [];
+    if (cfg.sizePx > 0) {
+      containerProps.push(`width: ${cfg.sizePx}px !important;`);
+      containerProps.push(`min-width: ${cfg.sizePx}px !important;`);
+      if (cfg.aspectRatio === 'auto') {
+        containerProps.push(`height: ${cfg.sizePx}px !important;`);
+      } else {
+        containerProps.push(`height: auto !important;`);
+        containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
+      }
+    } else if (cfg.aspectRatio !== 'auto') {
+      containerProps.push(`height: auto !important;`);
+      containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
+    }
+
+    if (cfg.borderRadiusPx >= 0) {
+      containerProps.push(`border-radius: ${cfg.borderRadiusPx}px !important;`);
+    }
+
+    if (containerProps.length > 0) {
+      rules.push(`
+        #chat .mes .avatar,
+        #chat .mes .mesAvatarWrapper .avatar {
+          ${containerProps.join('\n          ')}
+          overflow: hidden !important;
+        }
+      `);
+    }
+
+    const def = cfg.defaultCrop;
+    const imgRadius = cfg.borderRadiusPx >= 0 ? `border-radius: ${cfg.borderRadiusPx}px !important;` : '';
+    const scaleTransform = def.scale !== 1 ? `transform: scale(${def.scale}) !important;` : '';
+
+    rules.push(`
+      #chat .mes .avatar img {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+        object-position: ${def.posX}% ${def.posY}% !important;
+        ${scaleTransform}
+        ${imgRadius}
+        transform-origin: ${def.posX}% ${def.posY}% !important;
+      }
+    `);
+
+    for (const [avatarFile, crop] of Object.entries(cfg.perCharacterCrop)) {
+      if (!avatarFile || !crop) continue;
+      const encoded = escapeAttrValue(encodeURIComponent(avatarFile));
+      const raw = escapeAttrValue(avatarFile);
+      const scaleRule =
+        crop.scale !== 1 ? `transform: scale(${crop.scale}) !important;` : 'transform: none !important;';
+      rules.push(`
+        #chat .mes .avatar img[src*="${encoded}"],
+        #chat .mes .avatar img[src*="${raw}"] {
+          object-position: ${crop.posX}% ${crop.posY}% !important;
+          transform-origin: ${crop.posX}% ${crop.posY}% !important;
+          ${scaleRule}
+        }
+      `);
+    }
+  }
+
+  if (rules.length === 0) {
+    styleEl?.remove();
     return;
   }
 
@@ -26,72 +120,6 @@ export function applyAvatarStyles(): void {
     styleEl.id = STYLE_ELEMENT_ID;
     doc.head.appendChild(styleEl);
   }
-
-  const rules: string[] = [];
-
-  // 1. 头像容器大小、比例、圆角
-  const containerProps: string[] = [];
-  if (cfg.sizePx > 0) {
-    containerProps.push(`width: ${cfg.sizePx}px !important;`);
-    containerProps.push(`min-width: ${cfg.sizePx}px !important;`);
-    if (cfg.aspectRatio === 'auto') {
-      containerProps.push(`height: ${cfg.sizePx}px !important;`);
-    } else {
-      containerProps.push(`height: auto !important;`);
-      containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
-    }
-  } else if (cfg.aspectRatio !== 'auto') {
-    containerProps.push(`height: auto !important;`);
-    containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
-  }
-
-  if (cfg.borderRadiusPx >= 0) {
-    containerProps.push(`border-radius: ${cfg.borderRadiusPx}px !important;`);
-  }
-
-  if (containerProps.length > 0) {
-    rules.push(`
-      #chat .mes .avatar,
-      #chat .mes .mesAvatarWrapper .avatar {
-        ${containerProps.join('\n        ')}
-        overflow: hidden !important;
-      }
-    `);
-  }
-
-  // 2. 全局默认图片裁剪位置 & 缩放
-  const def = cfg.defaultCrop;
-  const imgRadius = cfg.borderRadiusPx >= 0 ? `border-radius: ${cfg.borderRadiusPx}px !important;` : '';
-  const scaleTransform = def.scale !== 1 ? `transform: scale(${def.scale}) !important;` : '';
-
-  rules.push(`
-    #chat .mes .avatar img {
-      width: 100% !important;
-      height: 100% !important;
-      object-fit: cover !important;
-      object-position: ${def.posX}% ${def.posY}% !important;
-      ${scaleTransform}
-      ${imgRadius}
-      transform-origin: ${def.posX}% ${def.posY}% !important;
-    }
-  `);
-
-  // 3. 单角色专属位置裁剪与缩放覆盖
-  for (const [avatarFile, crop] of Object.entries(cfg.perCharacterCrop)) {
-    if (!avatarFile || !crop) continue;
-    const encoded = escapeAttrValue(encodeURIComponent(avatarFile));
-    const raw = escapeAttrValue(avatarFile);
-    const scaleRule = crop.scale !== 1 ? `transform: scale(${crop.scale}) !important;` : 'transform: none !important;';
-    rules.push(`
-      #chat .mes .avatar img[src*="${encoded}"],
-      #chat .mes .avatar img[src*="${raw}"] {
-        object-position: ${crop.posX}% ${crop.posY}% !important;
-        transform-origin: ${crop.posX}% ${crop.posY}% !important;
-        ${scaleRule}
-      }
-    `);
-  }
-
   styleEl.textContent = rules.join('\n');
 }
 
@@ -104,7 +132,7 @@ export function triggerReplaceCharacterAvatar(): void {
   if (btn) {
     btn.click();
   } else {
-    showToast('warning', '请先打开一个角色卡详情页再替换头像');
+    showToast('warning', '请先打开角色卡详情页');
   }
 }
 
@@ -126,6 +154,35 @@ export function triggerReplaceUserAvatar(): void {
   }
 }
 
+/**
+ * 将「头像管理」注入酒馆输入框旁的魔法棒菜单 (#extensionsMenu)
+ */
+function injectWandMenuItem(): boolean {
+  const doc = getMainDoc();
+  const menu = doc.getElementById('extensionsMenu');
+  if (!menu) return false;
+  if (doc.getElementById(WAND_MENU_ITEM_ID)) return true;
+
+  const item = doc.createElement('div');
+  item.id = WAND_MENU_ITEM_ID;
+  item.className = 'list-group-item flex-container flexGap5 interactable';
+  item.tabIndex = 0;
+  item.innerHTML = `
+    <div class="fa-fw fa-solid fa-user-pen extensionsMenuExtensionButton"></div>
+    <span>头像管理</span>
+  `;
+  item.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 关闭魔法棒菜单并打开头像管理弹窗
+    menu.style.display = 'none';
+    appStore.showAvatarModal = true;
+  });
+
+  menu.appendChild(item);
+  return true;
+}
+
 function injectReplaceButtons(): void {
   const doc = getMainDoc();
   if (!appStore.settings.avatar.enableReplaceButton) {
@@ -134,13 +191,12 @@ function injectReplaceButtons(): void {
     return;
   }
 
-  // 1. 角色卡详情页按钮
   const charBlock = doc.querySelector('.form_create_bottom_buttons_block');
   if (charBlock && !doc.getElementById('tc-char-replace-avatar-btn')) {
     const btn = doc.createElement('div');
     btn.id = 'tc-char-replace-avatar-btn';
     btn.className = 'menu_button fa-solid fa-image';
-    btn.title = '替换角色卡头像';
+    btn.title = '替换头像';
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -151,13 +207,12 @@ function injectReplaceButtons(): void {
     else charBlock.appendChild(btn);
   }
 
-  // 2. 用户 Persona 详情页按钮
   const userBlock = doc.querySelector('.persona_controls_buttons_block');
   if (userBlock && !doc.getElementById('tc-user-replace-avatar-btn')) {
     const btn = doc.createElement('div');
     btn.id = 'tc-user-replace-avatar-btn';
     btn.className = 'menu_button fa-solid fa-image';
-    btn.title = '替换用户头像';
+    btn.title = '替换头像';
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -170,14 +225,24 @@ function injectReplaceButtons(): void {
 }
 
 /**
- * 启动头像样式响应 & 详情页快捷替换按钮（纯事件驱动，无轮询）
+ * 启动头像样式、图库覆盖、魔法棒菜单入口与详情页替换按钮
  */
 export function startAvatarFeature(): () => void {
   applyAvatarStyles();
   injectReplaceButtons();
+  injectWandMenuItem();
+
+  // #extensionsMenu 由酒馆异步渲染，短时重试确保注入
+  let wandRetries = 0;
+  const wandTimer = setInterval(() => {
+    wandRetries++;
+    if (injectWandMenuItem() || wandRetries >= 20) {
+      clearInterval(wandTimer);
+    }
+  }, 500);
 
   const stopWatch = watch(
-    () => appStore.settings.avatar,
+    () => [appStore.settings.avatar, appStore.galleryCacheVersion],
     () => {
       applyAvatarStyles();
       injectReplaceButtons();
@@ -189,16 +254,25 @@ export function startAvatarFeature(): () => void {
   const onDocClick = (e: Event) => {
     const target = e.target as HTMLElement | null;
     if (!target) return;
-    if (target.closest('#rightNavDrawerIcon, .character_select, .persona_item, #user_avatar_block, .drawer-icon')) {
+    if (target.closest('#extensionsMenuButton')) {
+      injectWandMenuItem();
+    }
+    if (
+      target.closest(
+        '#rightNavDrawerIcon, .character_select, .persona_item, #user_avatar_block, .drawer-icon',
+      )
+    ) {
       setTimeout(injectReplaceButtons, 150);
     }
   };
   doc.addEventListener('click', onDocClick);
 
   return () => {
+    clearInterval(wandTimer);
     stopWatch();
     doc.removeEventListener('click', onDocClick);
     doc.getElementById(STYLE_ELEMENT_ID)?.remove();
+    doc.getElementById(WAND_MENU_ITEM_ID)?.remove();
     doc.getElementById('tc-char-replace-avatar-btn')?.remove();
     doc.getElementById('tc-user-replace-avatar-btn')?.remove();
   };

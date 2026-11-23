@@ -8,6 +8,8 @@ import { startSyncEngine } from './bridge/stvault-sync';
 import { startAutoThemeWatcher } from './features/autoTheme';
 import { startCharacterBindingWatcher } from './features/charBinding';
 import { startAvatarFeature } from './features/avatarStyle';
+import { startBgBindingFeature } from './features/bgBinding';
+import { initAvatarGalleryDB } from './features/avatarGallery';
 
 const MOUNT_CONTAINER_ID = 'st-theme-companion-root';
 const CLEANUP_KEY = '__ST_THEME_COMPANION_CLEANUP__';
@@ -51,31 +53,52 @@ async function bootstrap() {
     return;
   }
 
-  // 初始化状态与对外 API
+  // 初始化状态、对外 API 与图库数据库
   initStore();
   installPublicTagApi(() => appStore.settings.tags);
+  initAvatarGalleryDB();
 
-  // 创建挂载节点
+  // 隐藏酒馆原生 #themes 选择框，并接管其所在区块
+  const themesSelect = hostBlock.querySelector<HTMLSelectElement>('#themes');
+  const originalSelectRow = themesSelect?.parentElement as HTMLElement | null;
+  const updateBtn = doc.getElementById('ui-preset-update-button');
+  const saveBtn = doc.getElementById('ui-preset-save-button');
+
+  const prevSelectDisplay = themesSelect?.style.display ?? '';
+  const prevRowDisplay = originalSelectRow?.style.display ?? '';
+
+  if (themesSelect) {
+    themesSelect.style.display = 'none';
+  }
+
+  // 创建挂载节点，直接替换原 #themes 所在行位置
   doc.getElementById(MOUNT_CONTAINER_ID)?.remove();
   const mountEl = doc.createElement('div');
   mountEl.id = MOUNT_CONTAINER_ID;
 
-  // 插在原生 #themes 区块之后，保持视觉自然连贯
-  const themesSelect = hostBlock.querySelector('#themes');
-  if (themesSelect && themesSelect.parentElement) {
-    themesSelect.parentElement.insertAdjacentElement('afterend', mountEl);
+  if (originalSelectRow) {
+    originalSelectRow.insertAdjacentElement('beforebegin', mountEl);
+    originalSelectRow.style.display = 'none';
   } else {
-    hostBlock.appendChild(mountEl);
+    hostBlock.prepend(mountEl);
   }
 
   const vueApp: VueApp = createApp(App);
   vueApp.mount(mountEl);
+
+  // 将原生「更新当前主题」「另存为新主题」按钮移入面板标题栏，保持原版流畅操作
+  const nativeSlot = mountEl.querySelector('#tc-native-buttons-slot');
+  if (nativeSlot) {
+    if (updateBtn) nativeSlot.appendChild(updateBtn);
+    if (saveBtn) nativeSlot.appendChild(saveBtn);
+  }
 
   // 启动各独立功能模块并收集卸载钩子
   const cleanups: Array<() => void> = [
     startSyncEngine(),
     startAutoThemeWatcher(),
     startCharacterBindingWatcher(),
+    startBgBindingFeature(),
     startAvatarFeature(),
   ];
 
@@ -90,13 +113,24 @@ async function bootstrap() {
         fn();
       } catch (_) {}
     });
+
+    // 还原原生按钮和 #themes 下拉框，保证热重载无残留
+    if (originalSelectRow) {
+      if (updateBtn) originalSelectRow.appendChild(updateBtn);
+      if (saveBtn) originalSelectRow.appendChild(saveBtn);
+      originalSelectRow.style.display = prevRowDisplay;
+    }
+    if (themesSelect) {
+      themesSelect.style.display = prevSelectDisplay;
+    }
+
     try {
       vueApp.unmount();
     } catch (_) {}
     mountEl.remove();
   };
 
-  console.log('[ThemeCompanion] v3.0.0 已挂载就绪');
+  console.log('[ThemeCompanion] v3.1.0 已挂载就绪');
 }
 
 bootstrap();

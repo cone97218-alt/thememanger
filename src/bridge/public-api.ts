@@ -9,6 +9,7 @@ function cloneTags(tags: TagItem[]): TagItem[] {
   return tags.map((t) => ({
     id: t.id,
     name: t.name,
+    parentId: t.parentId ?? null,
     themes: [...t.themes],
   }));
 }

@@ -40,6 +40,9 @@ export function createDefaultSettings(): CompanionSettings {
       enableReplaceButton: true,
       defaultCrop: { posX: 50, posY: 25, scale: 1 },
       perCharacterCrop: {},
+      perCharacterGallery: {},
+      userGallery: [],
+      avatarOverrides: {},
     },
     autoSyncOnFocus: true,
   };
@@ -52,7 +55,14 @@ function mergeSettings(saved: Partial<CompanionSettings> | null): CompanionSetti
     ...def,
     ...saved,
     favorites: Array.isArray(saved.favorites) ? saved.favorites : def.favorites,
-    tags: Array.isArray(saved.tags) ? saved.tags : def.tags,
+    tags: Array.isArray(saved.tags)
+      ? saved.tags.map((t) => ({
+          id: t.id,
+          name: t.name,
+          parentId: t.parentId ?? null,
+          themes: Array.isArray(t.themes) ? [...t.themes] : [],
+        }))
+      : def.tags,
     backgroundBindings: saved.backgroundBindings ? { ...saved.backgroundBindings } : {},
     characterBindings: saved.characterBindings ? { ...saved.characterBindings } : {},
     dayNightPairs: Array.isArray(saved.dayNightPairs) ? saved.dayNightPairs : [],
@@ -62,6 +72,9 @@ function mergeSettings(saved: Partial<CompanionSettings> | null): CompanionSetti
       ...(saved.avatar || {}),
       defaultCrop: { ...def.avatar.defaultCrop, ...(saved.avatar?.defaultCrop || {}) },
       perCharacterCrop: { ...(saved.avatar?.perCharacterCrop || {}) },
+      perCharacterGallery: { ...(saved.avatar?.perCharacterGallery || {}) },
+      userGallery: Array.isArray(saved.avatar?.userGallery) ? [...saved.avatar.userGallery] : [],
+      avatarOverrides: { ...(saved.avatar?.avatarOverrides || {}) },
     },
   };
 }
@@ -77,6 +90,10 @@ export const appStore = reactive({
   /** 弹窗开关状态 */
   showSettingsModal: false,
   showAvatarModal: false,
+  /** 当前正在通过酒馆背景抽屉选择背景图的主题名 */
+  bgBindingTheme: null as string | null,
+  /** 图库 Blob URL 缓存版本号（变更时触发依赖视图刷新） */
+  galleryCacheVersion: 0,
 });
 
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -150,15 +167,15 @@ export function ingestTheme(
     markRecentlyAdded(name);
   }
 
-  // 自动承接酒馆匣推送的分类/标签
+  // 自动承接酒馆匣推送的分类/标签（支持 "一级/二级/三级" 层级路径）
   const incomingTags = new Set<string>();
   if (Array.isArray(meta?.tags)) meta.tags.forEach((t) => t && incomingTags.add(String(t).trim()));
   if (meta?.category && meta.category.trim()) incomingTags.add(meta.category.trim());
   if (Array.isArray(theme._xia?.tags)) theme._xia.tags.forEach((t) => t && incomingTags.add(String(t).trim()));
   if (theme._xia?.category && theme._xia.category.trim()) incomingTags.add(theme._xia.category.trim());
 
-  incomingTags.forEach((tagName) => {
-    assignThemeToTagByName(name, tagName);
+  incomingTags.forEach((tagPath) => {
+    assignThemeToTagByName(name, tagPath);
   });
 
   // 自动承接预设背景图绑定
@@ -194,7 +211,6 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
       if (!prevNames.has(t.name)) {
         added.push(t.name);
         markRecentlyAdded(t.name);
-        // 若磁盘 JSON 内带 _xia 元数据也顺手自动归类
         if (t._xia) {
           t._xia.tags?.forEach((tagName) => assignThemeToTagByName(t.name, tagName));
           if (t._xia.category) assignThemeToTagByName(t.name, t._xia.category);
@@ -218,20 +234,20 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
     if (!options.silent) {
       if (added.length > 0 || removed.length > 0) {
         const parts: string[] = [];
-        if (added.length > 0) parts.push(`新增 ${added.length} 个`);
-        if (removed.length > 0) parts.push(`移除 ${removed.length} 个`);
-        showToast('success', `已同步磁盘美化：${parts.join('，')}（共 ${diskThemes.length} 个）`);
+        if (added.length > 0) parts.push(`新增 ${added.length}`);
+        if (removed.length > 0) parts.push(`移除 ${removed.length}`);
+        showToast('success', `同步完成：${parts.join('，')}`);
       } else {
-        showToast('info', `已是最新（共 ${diskThemes.length} 个美化）`);
+        showToast('info', '已是最新');
       }
     } else if (added.length > 0) {
-      showToast('info', `检测到 ${added.length} 个新美化：${added.slice(0, 3).join('、')}${added.length > 3 ? ' 等' : ''}`);
+      showToast('info', `新增 ${added.length} 个美化`);
     }
 
     return { added, removed };
   } catch (err: any) {
     if (!options.silent) {
-      showToast('error', `同步美化失败：${err?.message || err}`);
+      showToast('error', `同步失败：${err?.message || err}`);
     }
     return { added: [], removed: [] };
   } finally {
@@ -270,28 +286,157 @@ export function isFavorite(themeName: string): boolean {
   return appStore.settings.favorites.includes(themeName);
 }
 
-export function createTag(name: string): TagItem | null {
-  const clean = name.trim();
-  if (!clean) return null;
-  const exist = appStore.settings.tags.find((t) => t.name === clean);
-  if (exist) return exist;
-  const tag: TagItem = {
-    id: `tag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    name: clean,
-    themes: [],
-  };
-  appStore.settings.tags.push(tag);
-  return tag;
+// ==========================================================
+// N 级层级标签系统
+// ==========================================================
+
+function findTagByNameAndParent(name: string, parentId: string | null): TagItem | undefined {
+  return appStore.settings.tags.find(
+    (t) => t.name === name && (t.parentId || null) === (parentId || null),
+  );
 }
 
+/**
+ * 创建标签。支持指定 parentId，也支持传入 "父级/子级/孙级" 自动构建 N 级链条
+ */
+export function createTag(rawName: string, parentId: string | null = null): TagItem | null {
+  const segments = rawName
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return null;
+
+  let currentParentId: string | null = parentId || null;
+  let lastTag: TagItem | null = null;
+
+  for (const seg of segments) {
+    const exist = findTagByNameAndParent(seg, currentParentId);
+    if (exist) {
+      lastTag = exist;
+      currentParentId = exist.id;
+    } else {
+      const tag: TagItem = {
+        id: `tag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: seg,
+        parentId: currentParentId,
+        themes: [],
+      };
+      appStore.settings.tags.push(tag);
+      lastTag = tag;
+      currentParentId = tag.id;
+    }
+  }
+
+  return lastTag;
+}
+
+/**
+ * 删除标签（其直接子标签自动提升至上一级，避免误删子树）
+ */
 export function deleteTag(tagId: string): void {
+  const target = appStore.settings.tags.find((t) => t.id === tagId);
+  const fallbackParent = target?.parentId ?? null;
+  appStore.settings.tags.forEach((t) => {
+    if (t.parentId === tagId) {
+      t.parentId = fallbackParent;
+    }
+  });
   appStore.settings.tags = appStore.settings.tags.filter((t) => t.id !== tagId);
 }
 
-export function assignThemeToTagByName(themeName: string, tagName: string): void {
-  const cleanTag = tagName.trim();
-  if (!themeName || !cleanTag) return;
-  const tag = createTag(cleanTag);
+export function getRootTags(): TagItem[] {
+  const idSet = new Set(appStore.settings.tags.map((t) => t.id));
+  return appStore.settings.tags.filter((t) => !t.parentId || !idSet.has(t.parentId));
+}
+
+export function getChildTags(parentId: string): TagItem[] {
+  return appStore.settings.tags.filter((t) => t.parentId === parentId);
+}
+
+export function getDescendantTagIds(tagId: string): string[] {
+  const result: string[] = [];
+  const visited = new Set<string>();
+  const stack = [tagId];
+  while (stack.length > 0) {
+    const curr = stack.pop()!;
+    if (visited.has(curr)) continue;
+    visited.add(curr);
+    result.push(curr);
+    for (const t of appStore.settings.tags) {
+      if (t.parentId === curr && !visited.has(t.id)) {
+        stack.push(t.id);
+      }
+    }
+  }
+  return result;
+}
+
+export function getTagAncestry(tagId: string): TagItem[] {
+  const byId = new Map(appStore.settings.tags.map((t) => [t.id, t]));
+  const chain: TagItem[] = [];
+  const visited = new Set<string>();
+  let curr = byId.get(tagId);
+  while (curr && !visited.has(curr.id)) {
+    visited.add(curr.id);
+    chain.unshift(curr);
+    curr = curr.parentId ? byId.get(curr.parentId) : undefined;
+  }
+  return chain;
+}
+
+export function getTagThemeSet(tagId: string): Set<string> {
+  const descIds = new Set(getDescendantTagIds(tagId));
+  const set = new Set<string>();
+  appStore.settings.tags.forEach((t) => {
+    if (descIds.has(t.id)) {
+      t.themes.forEach((n) => set.add(n));
+    }
+  });
+  return set;
+}
+
+export function getTagThemeCount(tagId: string): number {
+  const validSet = new Set(appStore.themes.map((t) => t.name));
+  let count = 0;
+  getTagThemeSet(tagId).forEach((name) => {
+    if (validSet.has(name)) count++;
+  });
+  return count;
+}
+
+export interface FlattenedTagNode {
+  tag: TagItem;
+  depth: number;
+  hasChildren: boolean;
+}
+
+/**
+ * 将标签树按深度优先展平，便于设置页和打标签面板缩进渲染
+ */
+export function getFlattenedTagTree(): FlattenedTagNode[] {
+  const result: FlattenedTagNode[] = [];
+  const visited = new Set<string>();
+
+  const walk = (nodes: TagItem[], depth: number) => {
+    for (const node of nodes) {
+      if (visited.has(node.id)) continue;
+      visited.add(node.id);
+      const children = getChildTags(node.id);
+      result.push({ tag: node, depth, hasChildren: children.length > 0 });
+      if (children.length > 0) {
+        walk(children, depth + 1);
+      }
+    }
+  };
+
+  walk(getRootTags(), 0);
+  return result;
+}
+
+export function assignThemeToTagByName(themeName: string, tagPath: string): void {
+  const clean = tagPath.trim();
+  if (!themeName || !clean) return;
+  const tag = createTag(clean);
   if (tag && !tag.themes.includes(themeName)) {
     tag.themes.push(themeName);
   }
@@ -357,7 +502,6 @@ export async function renameTheme(oldName: string, newName: string): Promise<boo
   await saveThemeToDisk(cloned);
   await deleteThemeFromDisk(oldName);
 
-  // 同步更新本地引用（收藏、标签、背景绑定、角色绑定、日夜配对）
   appStore.settings.favorites = appStore.settings.favorites.map((f) => (f === oldName ? cleanNew : f));
   appStore.settings.tags.forEach((tag) => {
     tag.themes = tag.themes.map((n) => (n === oldName ? cleanNew : n));
@@ -393,20 +537,19 @@ export async function deleteTheme(themeName: string): Promise<boolean> {
   });
   delete appStore.settings.backgroundBindings[themeName];
   appStore.activeTheme = getActiveThemeName();
-  showToast('success', `已删除美化「${themeName}」`);
+  showToast('success', `已删除「${themeName}」`);
   return true;
 }
 
 /**
- * 解析目标字符串（具体主题名 或 '[Tag] tagId'）
+ * 解析目标字符串（具体主题名 或 '[Tag] tagId'，包含其所有子标签）
  */
 export function resolveTargetTheme(target: string): string | null {
   if (!target) return null;
   if (target.startsWith('[Tag] ')) {
     const tagId = target.slice(6);
-    const tag = appStore.settings.tags.find((t) => t.id === tagId);
-    if (!tag || tag.themes.length === 0) return null;
-    const available = tag.themes.filter((name) => appStore.themes.some((t) => t.name === name));
+    const candidates = Array.from(getTagThemeSet(tagId));
+    const available = candidates.filter((name) => appStore.themes.some((t) => t.name === name));
     if (available.length === 0) return null;
     return available[Math.floor(Math.random() * available.length)];
   }

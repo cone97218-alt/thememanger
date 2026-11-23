@@ -215,8 +215,12 @@ export async function deleteThemeFromDisk(themeName: string): Promise<void> {
  */
 export async function fetchBackgroundList(): Promise<string[]> {
   try {
-    const data = await apiPost<{ images?: string[] }>('backgrounds/all', {});
-    if (Array.isArray(data?.images)) return data.images;
+    const data = await apiPost<{ images?: Array<string | { filename?: string }> }>('backgrounds/all', {});
+    if (Array.isArray(data?.images)) {
+      return data.images
+        .map((item) => (typeof item === 'string' ? item : String(item?.filename || '')))
+        .filter(Boolean);
+    }
   } catch (_) {}
 
   // 降级：从 DOM 中已挂载的背景卡片读取

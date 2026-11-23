@@ -32,7 +32,7 @@ export function getSTContext(): Record<string, any> | null {
 export function showToast(
   type: 'success' | 'info' | 'warning' | 'error',
   message: string,
-  title = '美化管理伴侣',
+  title = '美化管理',
 ) {
   const win = getMainWin();
   if (win.toastr && typeof win.toastr[type] === 'function') {

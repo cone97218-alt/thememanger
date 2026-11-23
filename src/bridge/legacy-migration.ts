@@ -61,25 +61,38 @@ export function migrateLegacyDataInto(settings: CompanionSettings): MigrationSum
     settings.favorites = Array.from(favSet);
   }
 
-  // 2. 标签
+  // 2. 标签（保留 N 级 parentId 层级）
   const legacyTags = readLegacyJson<any[]>('themeManager_themeTags');
   if (Array.isArray(legacyTags)) {
-    const existingByName = new Map(settings.tags.map((t) => [t.name, t]));
+    const existingById = new Map(settings.tags.map((t) => [t.id, t]));
+    const existingByKey = new Map(
+      settings.tags.map((t) => [`${t.parentId || ''}::${t.name}`, t]),
+    );
     for (const lt of legacyTags) {
       if (!lt || typeof lt.name !== 'string' || !lt.name.trim()) continue;
-      const themes = Array.isArray(lt.themes) ? lt.themes.filter((x: any) => typeof x === 'string') : [];
-      const exist = existingByName.get(lt.name);
+      const themes = Array.isArray(lt.themes)
+        ? lt.themes.filter((x: any) => typeof x === 'string')
+        : [];
+      const parentId = typeof lt.parentId === 'string' && lt.parentId ? lt.parentId : null;
+      const key = `${parentId || ''}::${lt.name.trim()}`;
+      const exist = (typeof lt.id === 'string' && existingById.get(lt.id)) || existingByKey.get(key);
       if (exist) {
         const merged = new Set([...exist.themes, ...themes]);
         exist.themes = Array.from(merged);
+        if (!exist.parentId && parentId) exist.parentId = parentId;
       } else {
         const newTag: TagItem = {
-          id: typeof lt.id === 'string' && lt.id ? lt.id : `tag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          id:
+            typeof lt.id === 'string' && lt.id
+              ? lt.id
+              : `tag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name: lt.name.trim(),
+          parentId,
           themes: Array.from(new Set(themes)),
         };
         settings.tags.push(newTag);
-        existingByName.set(newTag.name, newTag);
+        existingById.set(newTag.id, newTag);
+        existingByKey.set(key, newTag);
         summary.tagsCount++;
       }
     }
