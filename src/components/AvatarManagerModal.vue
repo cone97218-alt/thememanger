@@ -22,6 +22,8 @@ const selectedCropKey = ref<string>('__global__');
 
 const showUrlBar = ref(false);
 const urlInput = ref('');
+const isCheckingUrl = ref(false);
+const brokenItemIds = ref<Set<string>>(new Set());
 const galleryFileInput = ref<HTMLInputElement | null>(null);
 
 // 图库批量删除状态
@@ -181,12 +183,48 @@ function handleGalleryCardClick(itemId: string) {
 
 function selectGalleryItem(itemId: string) {
   const key = activeGalleryKey.value;
-  if (!key) return;
-  if (!itemId) {
-    delete appStore.settings.avatar.avatarOverrides[key];
-  } else {
-    appStore.settings.avatar.avatarOverrides[key] = itemId;
+  if (itemId && brokenItemIds.value.has(itemId)) {
+    showToast('warning', '该图片已失效，无法应用');
+    return;
   }
+  if (!itemId) {
+    // 还原原图：用户模式下同时清除角色绑定与全局覆盖，确保任何情况下都能 100% 恢复原图
+    if (targetType.value === 'user') {
+      delete appStore.settings.avatar.avatarOverrides['__user__'];
+      if (selectedCharAvatar.value) {
+        delete appStore.settings.avatar.avatarOverrides[`__user_char__:${selectedCharAvatar.value}`];
+      }
+    } else if (key) {
+      delete appStore.settings.avatar.avatarOverrides[key];
+    }
+    showToast('info', '已还原原图');
+    return;
+  }
+  if (!key) return;
+  appStore.settings.avatar.avatarOverrides[key] = itemId;
+}
+
+function markItemBroken(id: string) {
+  const next = new Set(brokenItemIds.value);
+  next.add(id);
+  brokenItemIds.value = next;
+}
+
+function verifyImageUrl(url: string, timeoutMs = 6000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    img.onload = () => finish(img.naturalWidth > 0);
+    img.onerror = () => finish(false);
+    img.src = url;
+  });
 }
 
 function toggleGalleryBatch() {
@@ -245,11 +283,18 @@ async function handleGalleryUpload(ev: Event) {
   }
 }
 
-function handleAddUrl() {
+async function handleAddUrl() {
   const clean = urlInput.value.trim();
-  if (!clean) return;
+  if (!clean || isCheckingUrl.value) return;
   if (!activeGalleryKey.value) {
     showToast('warning', '请先选择角色');
+    return;
+  }
+  isCheckingUrl.value = true;
+  const ok = await verifyImageUrl(clean);
+  isCheckingUrl.value = false;
+  if (!ok) {
+    showToast('error', '图片链接无法加载，请检查地址或防盗链');
     return;
   }
   const item: AvatarGalleryItem = {
@@ -260,6 +305,7 @@ function handleAddUrl() {
   appendToActiveGallery(item);
   urlInput.value = '';
   showUrlBar.value = false;
+  showToast('success', '已添加到图库');
 }
 
 async function handleRemoveGalleryItem(item: AvatarGalleryItem) {
@@ -313,7 +359,7 @@ function updateCrop(patch: Partial<AvatarCropRule>) {
 function resetCurrentCrop() {
   const cfg = appStore.settings.avatar;
   if (selectedCropKey.value === '__global__') {
-    cfg.defaultCrop = { posX: 50, posY: 25, scale: 1 };
+    cfg.defaultCrop = { posX: 50, posY: 50, scale: 1 };
   } else {
     delete cfg.perCharacterCrop[selectedCropKey.value];
   }
@@ -549,6 +595,14 @@ function close() {
               >
                 <i class="fa-solid fa-list-check"></i>
               </button>
+              <button
+                type="button"
+                class="tc-tool-btn"
+                title="还原原图"
+                @click="selectGalleryItem('')"
+              >
+                <i class="fa-solid fa-rotate-left"></i>
+              </button>
               <button type="button" class="tc-tool-btn" title="替换原图" @click="handleReplaceNative">
                 <i class="fa-solid fa-file-image"></i>
               </button>
@@ -580,8 +634,14 @@ function close() {
               placeholder="输入图片 URL..."
               @keyup.enter="handleAddUrl"
             />
-            <button type="button" class="tc-btn primary" title="添加" @click="handleAddUrl">
-              <i class="fa-solid fa-check"></i>
+            <button
+              type="button"
+              class="tc-btn primary"
+              :disabled="isCheckingUrl"
+              title="添加"
+              @click="handleAddUrl"
+            >
+              <i :class="isCheckingUrl ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-check'"></i>
             </button>
           </div>
 
@@ -639,9 +699,20 @@ function close() {
               }"
               @click="handleGalleryCardClick(item.id)"
             >
-              <img v-if="getItemSrc(item)" :src="getItemSrc(item)" :alt="item.name || 'avatar'" />
-              <div v-else class="tc-gallery-orig-placeholder">
-                <i class="fa-regular fa-image"></i>
+              <img
+                v-if="getItemSrc(item) && !brokenItemIds.has(item.id)"
+                :src="getItemSrc(item)"
+                :alt="item.name || 'avatar'"
+                @error="markItemBroken(item.id)"
+              />
+              <div v-else class="tc-gallery-orig-placeholder" title="图片加载失败">
+                <i
+                  :class="
+                    brokenItemIds.has(item.id)
+                      ? 'fa-solid fa-triangle-exclamation'
+                      : 'fa-regular fa-image'
+                  "
+                ></i>
               </div>
               <span v-if="isGalleryBatch" class="tc-gallery-chk">
                 <i

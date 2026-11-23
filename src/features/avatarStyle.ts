@@ -13,6 +13,7 @@ function escapeAttrValue(val: string): string {
 
 /**
  * 根据当前 avatar 配置与图库覆盖生成并注入精准 CSS
+ * 严格遵循惰性注入原则：未修改的尺寸/裁剪项绝不覆写原生宽高，避免破坏主题原有头像大小
  */
 export function applyAvatarStyles(): void {
   const doc = getMainDoc();
@@ -20,7 +21,7 @@ export function applyAvatarStyles(): void {
   const cfg = appStore.settings.avatar;
   const rules: string[] = [];
 
-  // 1. 图库视觉覆盖（独立于大小/裁剪开关，始终生效；当前角色绑定的用户头像优先于全局用户头像）
+  // 1. 图库视觉覆盖（当前角色绑定的用户头像优先于全局用户头像）
   const activeChar = getCurrentCharacter();
   const charBoundUserUrl = activeChar?.avatar
     ? resolveOverrideUrl(`__user_char__:${activeChar.avatar}`)
@@ -51,9 +52,11 @@ export function applyAvatarStyles(): void {
     `);
   }
 
-  // 2. 头像大小、比例、圆角与裁剪
+  // 2. 头像大小、比例、圆角与裁剪（仅在用户实际修改对应项时才注入，绝不强写 width: 100% 撑爆原布局）
   if (cfg.enabled) {
     const containerProps: string[] = [];
+    const imgSizeProps: string[] = [];
+
     if (cfg.sizePx > 0) {
       containerProps.push(`width: ${cfg.sizePx}px !important;`);
       containerProps.push(`min-width: ${cfg.sizePx}px !important;`);
@@ -63,13 +66,16 @@ export function applyAvatarStyles(): void {
         containerProps.push(`height: auto !important;`);
         containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
       }
+      imgSizeProps.push(`width: 100% !important;`);
+      imgSizeProps.push(`height: 100% !important;`);
     } else if (cfg.aspectRatio !== 'auto') {
-      containerProps.push(`height: auto !important;`);
-      containerProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
+      imgSizeProps.push(`height: auto !important;`);
+      imgSizeProps.push(`aspect-ratio: ${cfg.aspectRatio} !important;`);
     }
 
     if (cfg.borderRadiusPx >= 0) {
       containerProps.push(`border-radius: ${cfg.borderRadiusPx}px !important;`);
+      imgSizeProps.push(`border-radius: ${cfg.borderRadiusPx}px !important;`);
     }
 
     if (containerProps.length > 0) {
@@ -83,30 +89,41 @@ export function applyAvatarStyles(): void {
     }
 
     const def = cfg.defaultCrop;
-    const imgRadius = cfg.borderRadiusPx >= 0 ? `border-radius: ${cfg.borderRadiusPx}px !important;` : '';
-    const scaleTransform = def.scale !== 1 ? `transform: scale(${def.scale}) !important;` : '';
+    const hasCustomDefCrop = def.posX !== 50 || def.posY !== 50 || def.scale !== 1;
+    const imgRules: string[] = [...imgSizeProps];
 
-    rules.push(`
-      #chat .mes .avatar img {
-        width: 100% !important;
-        height: 100% !important;
-        object-fit: cover !important;
-        object-position: ${def.posX}% ${def.posY}% !important;
-        ${scaleTransform}
-        ${imgRadius}
-        transform-origin: ${def.posX}% ${def.posY}% !important;
+    if (hasCustomDefCrop || cfg.sizePx > 0 || cfg.aspectRatio !== 'auto') {
+      imgRules.push(`object-fit: cover !important;`);
+    }
+    if (hasCustomDefCrop) {
+      imgRules.push(`object-position: ${def.posX}% ${def.posY}% !important;`);
+      imgRules.push(`transform-origin: ${def.posX}% ${def.posY}% !important;`);
+      if (def.scale !== 1) {
+        imgRules.push(`transform: scale(${def.scale}) !important;`);
       }
-    `);
+    }
+
+    if (imgRules.length > 0) {
+      rules.push(`
+        #chat .mes .avatar img {
+          ${imgRules.join('\n          ')}
+        }
+      `);
+    }
 
     for (const [avatarFile, crop] of Object.entries(cfg.perCharacterCrop)) {
       if (!avatarFile || !crop) continue;
+      if (crop.posX === 50 && crop.posY === 50 && crop.scale === 1 && !hasCustomDefCrop) continue;
       const encoded = escapeAttrValue(encodeURIComponent(avatarFile));
       const raw = escapeAttrValue(avatarFile);
       const scaleRule =
-        crop.scale !== 1 ? `transform: scale(${crop.scale}) !important;` : 'transform: none !important;';
+        crop.scale !== 1
+          ? `transform: scale(${crop.scale}) !important;`
+          : 'transform: none !important;';
       rules.push(`
         #chat .mes .avatar img[src*="${encoded}"],
         #chat .mes .avatar img[src*="${raw}"] {
+          object-fit: cover !important;
           object-position: ${crop.posX}% ${crop.posY}% !important;
           transform-origin: ${crop.posX}% ${crop.posY}% !important;
           ${scaleRule}
@@ -179,7 +196,6 @@ function injectWandMenuItem(): boolean {
   item.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    // 关闭魔法棒菜单并打开头像管理弹窗
     menu.style.display = 'none';
     appStore.showAvatarModal = true;
   });
@@ -237,7 +253,6 @@ export function startAvatarFeature(): () => void {
   injectReplaceButtons();
   injectWandMenuItem();
 
-  // #extensionsMenu 由酒馆异步渲染，短时重试确保注入
   let wandRetries = 0;
   const wandTimer = setInterval(() => {
     wandRetries++;
@@ -257,7 +272,6 @@ export function startAvatarFeature(): () => void {
 
   const doc = getMainDoc();
 
-  // 禁用点击聊天头像放大预览（捕获阶段拦截）
   const onCaptureAvatarClick = (e: Event) => {
     if (!appStore.settings.avatar.disableAvatarZoom) return;
     const target = e.target as HTMLElement | null;
@@ -269,7 +283,6 @@ export function startAvatarFeature(): () => void {
   };
   doc.addEventListener('click', onCaptureAvatarClick, true);
 
-  // 切换聊天角色时刷新角色绑定的用户头像覆盖
   const unsubChatChanged = onSTEvent('CHAT_CHANGED', () => {
     setTimeout(applyAvatarStyles, 60);
   });

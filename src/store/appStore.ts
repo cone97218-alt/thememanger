@@ -39,7 +39,7 @@ export function createDefaultSettings(): CompanionSettings {
       borderRadiusPx: -1,
       enableReplaceButton: true,
       disableAvatarZoom: false,
-      defaultCrop: { posX: 50, posY: 25, scale: 1 },
+      defaultCrop: { posX: 50, posY: 50, scale: 1 },
       perCharacterCrop: {},
       perCharacterGallery: {},
       userGallery: [],
