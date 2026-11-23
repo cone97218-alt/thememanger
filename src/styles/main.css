@@ -31,6 +31,31 @@
   box-sizing: border-box;
 }
 
+/* 彻底重置图标与按钮基线，防止酒馆/第三方主题样式导致图标偏移畸形 */
+#tc-panel button,
+#st-theme-companion-modals button {
+  text-indent: 0 !important;
+  letter-spacing: normal !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+}
+
+#tc-panel i.fa-solid,
+#tc-panel i.fa-regular,
+#st-theme-companion-modals i.fa-solid,
+#st-theme-companion-modals i.fa-regular {
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
+  text-indent: 0 !important;
+  letter-spacing: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0;
+}
+
 /* 顶部标题栏 */
 .tc-header {
   display: flex;

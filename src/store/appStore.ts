@@ -217,8 +217,8 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
 
     const isInitialLoad = prevNames.size === 0;
     for (const t of diskThemes) {
-      upsertThemeInSTMemory(t);
       if (!prevNames.has(t.name)) {
+        upsertThemeInSTMemory(t);
         if (!isInitialLoad) {
           added.push(t.name);
           markRecentlyAdded(t.name);
@@ -239,7 +239,10 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
       }
     }
 
-    appStore.themes = diskThemes;
+    // 仅在真正有增删或首次加载时更新响应式列表，避免无意义重渲染
+    if (isInitialLoad || added.length > 0 || removed.length > 0) {
+      appStore.themes = diskThemes;
+    }
     appStore.activeTheme = getActiveThemeName();
     appStore.lastSyncAt = Date.now();
 

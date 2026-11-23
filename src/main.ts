@@ -60,27 +60,35 @@ async function bootstrap() {
   installPublicTagApi(() => appStore.settings.tags);
   initAvatarGalleryDB();
 
-  // 隐藏酒馆原生 #themes 选择框，并接管其所在区块
+  // 隐藏酒馆原生 #UI-presets-block 内的全部原生元素（包含「UI 主题」标题栏、#themes 下拉框及 TT 酒馆原生绑定按钮）
+  const presetsBlock = hostBlock.querySelector<HTMLElement>('#UI-presets-block');
   const themesSelect = hostBlock.querySelector<HTMLSelectElement>('#themes');
   const originalSelectRow = themesSelect?.parentElement as HTMLElement | null;
   const updateBtn = doc.getElementById('ui-preset-update-button');
   const saveBtn = doc.getElementById('ui-preset-save-button');
 
-  const prevSelectDisplay = themesSelect?.style.display ?? '';
-  const prevRowDisplay = originalSelectRow?.style.display ?? '';
-
-  if (themesSelect) {
-    themesSelect.style.display = 'none';
+  const hiddenOriginals: Array<{ el: HTMLElement; prevDisplay: string }> = [];
+  if (presetsBlock) {
+    Array.from(presetsBlock.children).forEach((child) => {
+      const el = child as HTMLElement;
+      if (el.id === PANEL_CONTAINER_ID) return;
+      hiddenOriginals.push({ el, prevDisplay: el.style.display });
+      el.style.display = 'none';
+    });
+  } else if (originalSelectRow) {
+    hiddenOriginals.push({ el: originalSelectRow, prevDisplay: originalSelectRow.style.display });
+    originalSelectRow.style.display = 'none';
   }
 
-  // 1. 挂载主面板节点（替换原 #themes 所在行）
+  // 1. 挂载主面板节点（完全替换原 #UI-presets-block 视觉区域）
   doc.getElementById(PANEL_CONTAINER_ID)?.remove();
   const panelMountEl = doc.createElement('div');
   panelMountEl.id = PANEL_CONTAINER_ID;
 
-  if (originalSelectRow) {
+  if (presetsBlock) {
+    presetsBlock.prepend(panelMountEl);
+  } else if (originalSelectRow) {
     originalSelectRow.insertAdjacentElement('beforebegin', panelMountEl);
-    originalSelectRow.style.display = 'none';
   } else {
     hostBlock.prepend(panelMountEl);
   }
@@ -128,11 +136,10 @@ async function bootstrap() {
     if (originalSelectRow) {
       if (updateBtn) originalSelectRow.appendChild(updateBtn);
       if (saveBtn) originalSelectRow.appendChild(saveBtn);
-      originalSelectRow.style.display = prevRowDisplay;
     }
-    if (themesSelect) {
-      themesSelect.style.display = prevSelectDisplay;
-    }
+    hiddenOriginals.forEach(({ el, prevDisplay }) => {
+      el.style.display = prevDisplay;
+    });
 
     try {
       panelApp.unmount();

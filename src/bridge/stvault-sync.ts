@@ -2,7 +2,7 @@ import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
 import { appStore, ingestTheme, syncThemesWithDisk } from '../store/appStore';
 
-const FOCUS_SYNC_COOLDOWN_MS = 30_000;
+const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
 
 /**
  * 启动酒馆匣实时推送监听 & 切回窗口静默 Diff 同步
@@ -36,13 +36,23 @@ export function startSyncEngine(): () => void {
 
   doc.addEventListener('stvault:themePushed', onStVaultPushed);
 
-  // 2. 切回前台/窗口聚焦时的带冷却静默 Diff 同步（兜底手动往文件夹拖文件的情况）
+  // 2. 切回前台/窗口聚焦时的低开销静默 Diff 同步（延迟至空闲帧执行，不阻塞切窗）
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const maybeSilentSync = () => {
     if (!appStore.settings.autoSyncOnFocus) return;
     if (doc.visibilityState === 'hidden') return;
     const elapsed = Date.now() - appStore.lastSyncAt;
     if (elapsed < FOCUS_SYNC_COOLDOWN_MS) return;
-    syncThemesWithDisk({ silent: true });
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      const run = () => syncThemesWithDisk({ silent: true });
+      if (typeof win.requestIdleCallback === 'function') {
+        win.requestIdleCallback(run, { timeout: 2000 });
+      } else {
+        run();
+      }
+    }, 600);
   };
 
   const onVisibilityChange = () => {
@@ -65,6 +75,7 @@ export function startSyncEngine(): () => void {
   selectEl?.addEventListener('change', onNativeThemeChange);
 
   return () => {
+    if (idleTimer) clearTimeout(idleTimer);
     doc.removeEventListener('stvault:themePushed', onStVaultPushed);
     doc.removeEventListener('visibilitychange', onVisibilityChange);
     win.removeEventListener('focus', maybeSilentSync);
