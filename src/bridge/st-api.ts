@@ -6,17 +6,39 @@ export const SETTINGS_NAMESPACE = 'theme_companion_v3';
 let _bgModulePromise: Promise<any> | null = null;
 
 /**
- * 记录本会话中通过酒馆匣推送或 JSON 导入的免刷新主题名
- * 一旦用户点击酒馆原生「保存」按钮，power-user.js 会自行将其写入私有 themes 闭包，即可从本集合移除
+ * 记录需要由本插件直接渲染 DOM 的免刷新主题（本会话从酒馆匣推送或导入、尚未经酒馆原生保存按钮写入 power-user.js 闭包的主题）
  */
 const freshlyIngestedThemes = new Set<string>();
 
-export function markThemeFreshlyIngested(name: string): void {
-  if (name) freshlyIngestedThemes.add(name);
+/**
+ * 记录酒馆启动时已在 power-user.js 私有 themes 闭包内的原生主题集合
+ */
+const nativeClosureThemes = new Set<string>();
+let _closureSnapshotTaken = false;
+
+export function captureInitialNativeThemes(): void {
+  if (_closureSnapshotTaken) return;
+  const doc = getMainDoc();
+  const select = doc.querySelector<HTMLSelectElement>('#themes');
+  if (select && select.options.length > 0) {
+    Array.from(select.options).forEach((opt) => {
+      if (opt.value) nativeClosureThemes.add(opt.value);
+    });
+    _closureSnapshotTaken = true;
+  }
 }
 
-export function clearThemeFreshlyIngested(name: string): void {
-  if (name) freshlyIngestedThemes.delete(name);
+export function markThemeFreshlyIngested(name: string): void {
+  if (name) {
+    freshlyIngestedThemes.add(name);
+  }
+}
+
+export function markThemeSavedByNative(name: string): void {
+  if (name) {
+    freshlyIngestedThemes.delete(name);
+    nativeClosureThemes.add(name);
+  }
 }
 
 async function getBgModule(): Promise<any> {
@@ -89,6 +111,7 @@ export function getActiveThemeName(): string {
 }
 
 export function getMemoryThemes(): ThemeObject[] {
+  captureInitialNativeThemes();
   const ctx = getSTContext();
   const pu = getPowerUser();
   const win = getMainWin();
@@ -103,6 +126,7 @@ export function getMemoryThemes(): ThemeObject[] {
 }
 
 export async function fetchThemesFromDisk(): Promise<ThemeObject[]> {
+  captureInitialNativeThemes();
   const data = await apiPost<{ themes?: ThemeObject[] }>('settings/get', {});
   const list = Array.isArray(data?.themes) ? data.themes : [];
   return list.filter((t) => t && typeof t === 'object' && typeof t.name === 'string' && t.name.trim());
@@ -111,6 +135,8 @@ export async function fetchThemesFromDisk(): Promise<ThemeObject[]> {
 export function upsertThemeInSTMemory(theme: ThemeObject): void {
   const name = theme?.name?.trim();
   if (!name) return;
+
+  captureInitialNativeThemes();
 
   const ctx = getSTContext();
   const pu = getPowerUser();
@@ -134,6 +160,8 @@ export function upsertThemeInSTMemory(theme: ThemeObject): void {
   if (typeof win.baibaokuHydrateTheme === 'function') {
     try {
       win.baibaokuHydrateTheme(theme);
+      nativeClosureThemes.add(name);
+      freshlyIngestedThemes.delete(name);
     } catch (_) {}
   }
 
@@ -157,6 +185,7 @@ export function removeThemeFromSTMemory(name: string): void {
   const doc = getMainDoc();
 
   freshlyIngestedThemes.delete(name);
+  nativeClosureThemes.delete(name);
 
   const removeFromArray = (arr: any) => {
     if (!Array.isArray(arr)) return;
@@ -198,7 +227,8 @@ const THEME_COLOR_KEYS: Array<{ key: string; pickerId: string; cssVar: string }>
 ];
 
 /**
- * 仅在原生 power-user.js 闭包未命中（如本会话刚从酒馆匣推送的免刷新主题）时执行直接渲染
+ * 仅在原生 power-user.js 闭包未包含最新主题（如刚从酒馆匣免刷新推送的主题）时执行直接渲染
+ * 注意：绝不可对 toolcool-color-picker 的只读 getter 属性 picker.rgba 赋值，否则在严格模式下会抛 TypeError 中断后续颜色同步
  */
 function applyFallbackThemeDOM(theme: ThemeObject): void {
   const doc = getMainDoc();
@@ -227,12 +257,17 @@ function applyFallbackThemeDOM(theme: ThemeObject): void {
   for (const { key, pickerId, cssVar } of THEME_COLOR_KEYS) {
     const col = theme[key];
     if (typeof col === 'string' && col) {
-      rootStyle.setProperty(cssVar, col);
-      const picker = doc.querySelector<any>(pickerId);
+      // 1. 先更新取色器 attribute（它会同步触发取色器内部 change）
+      const picker = doc.querySelector<HTMLElement>(pickerId);
       if (picker) {
-        picker.setAttribute('color', col);
-        if ('rgba' in picker) picker.rgba = col;
+        try {
+          picker.setAttribute('color', col);
+        } catch (_) {}
       }
+      // 2. 再以主题原始颜色权威写回 power_user 与 :root CSS 变量，防止被取色器二次格式化篡改
+      if (pu) pu[key] = col;
+      rootStyle.setProperty(cssVar, col);
+
       if (key === 'main_text_color' && col.includes('(')) {
         const parts = col.split('(')[1]?.split(')')[0]?.split(',');
         if (parts && parts.length >= 4) {
@@ -266,17 +301,12 @@ function applyFallbackThemeDOM(theme: ThemeObject): void {
   }
 }
 
-/**
- * 切换主题：
- * 1. 通过哨兵检测原生 #themes change 是否已在 power-user.js 闭包内命中并完成切换；
- * 2. 若原生已命中（存量主题及用原生保存按钮保存过的主题），直接信任原生结果，零冗余覆盖；
- * 3. 仅当原生未命中或属于刚从酒馆匣免刷新推送的新主题时，才由 applyFallbackThemeDOM 兜底渲染。
- */
 export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
   if (!themeName) return false;
+  captureInitialNativeThemes();
+
   const doc = getMainDoc();
   const win = getMainWin();
-  const pu = getPowerUser();
   const select = doc.querySelector<HTMLSelectElement>('#themes');
   if (!select) return false;
 
@@ -305,11 +335,6 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
   targetOpt.setAttribute('selected', 'selected');
   select.value = themeName;
 
-  // 植入哨兵：若原生闭包内存在该主题，trigger('change') 会同步把 pu.custom_css 改写为该主题真实的 custom_css
-  const SENTINEL = '__TC_NATIVE_PROBE__';
-  const prevCss = pu?.custom_css;
-  if (pu) pu.custom_css = SENTINEL;
-
   if (win.jQuery) {
     try {
       win.jQuery(select).val(themeName).trigger('change');
@@ -320,13 +345,10 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
     select.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  const handledByNative = pu ? pu.custom_css !== SENTINEL : false;
-  if (!handledByNative && pu) {
-    pu.custom_css = prevCss;
-  }
+  const needsFallback =
+    !nativeClosureThemes.has(themeName) || freshlyIngestedThemes.has(themeName);
 
-  // 仅当原生未命中（或刚被酒馆匣免刷新推送覆盖）时，才执行兜底 DOM 渲染
-  if (!handledByNative || freshlyIngestedThemes.has(themeName)) {
+  if (needsFallback) {
     const hasFullData = Boolean(
       themeObj && (themeObj.main_text_color || typeof themeObj.custom_css === 'string'),
     );

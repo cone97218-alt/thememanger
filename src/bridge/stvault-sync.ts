@@ -1,6 +1,6 @@
 import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
-import { clearThemeFreshlyIngested } from './st-api';
+import { markThemeSavedByNative } from './st-api';
 import { appStore, ingestTheme, syncThemesWithDisk } from '../store/appStore';
 
 const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
@@ -86,7 +86,7 @@ export function startSyncEngine(): () => void {
   if (selectEl && typeof MutationObserver !== 'undefined') {
     selectObserver = new MutationObserver(() => {
       syncSelectOptionsToStore();
-      if (selectEl.value) clearThemeFreshlyIngested(selectEl.value);
+      if (selectEl.value) markThemeSavedByNative(selectEl.value);
     });
     selectObserver.observe(selectEl, { childList: true });
   }
@@ -94,7 +94,7 @@ export function startSyncEngine(): () => void {
   const updateBtn = doc.getElementById('ui-preset-update-button');
   const onNativeSaveClick = () => {
     if (appStore.activeTheme) {
-      clearThemeFreshlyIngested(appStore.activeTheme);
+      markThemeSavedByNative(appStore.activeTheme);
     }
   };
   updateBtn?.addEventListener('click', onNativeSaveClick);
