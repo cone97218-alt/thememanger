@@ -8,6 +8,7 @@ import {
   getActiveThemeName,
   getMemoryThemes,
   loadExtensionSettings,
+  markThemeFreshlyIngested,
   saveExtensionSettings,
   saveThemeToDisk,
   upsertThemeInSTMemory,
@@ -167,6 +168,7 @@ export function ingestTheme(
   const name = theme?.name?.trim();
   if (!name) return;
 
+  markThemeFreshlyIngested(name);
   upsertThemeInSTMemory(theme);
   const idx = appStore.themes.findIndex((t) => t.name === name);
   if (idx >= 0) {

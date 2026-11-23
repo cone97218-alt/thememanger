@@ -1,5 +1,6 @@
 import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
+import { clearThemeFreshlyIngested } from './st-api';
 import { appStore, ingestTheme, syncThemesWithDisk } from '../store/appStore';
 
 const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
@@ -64,21 +65,47 @@ export function startSyncEngine(): () => void {
   doc.addEventListener('visibilitychange', onVisibilityChange);
   win.addEventListener('focus', maybeSilentSync);
 
-  // 3. 监听酒馆原生 #themes 下拉框变化（如果用户从其他地方切换了主题，保持 activeTheme 同步）
-  const onNativeThemeChange = () => {
-    const sel = doc.querySelector<HTMLSelectElement>('#themes');
-    if (sel && sel.value && sel.value !== appStore.activeTheme) {
-      appStore.activeTheme = sel.value;
+  // 3. 监听酒馆原生 #themes 下拉框变化与原生保存/另存为操作
+  const selectEl = doc.querySelector<HTMLSelectElement>('#themes');
+  const syncSelectOptionsToStore = () => {
+    if (!selectEl) return;
+    Array.from(selectEl.options).forEach((opt) => {
+      const name = opt.value?.trim();
+      if (name && !appStore.themes.some((t) => t.name === name)) {
+        appStore.themes.unshift({ name });
+      }
+    });
+    if (selectEl.value && selectEl.value !== appStore.activeTheme) {
+      appStore.activeTheme = selectEl.value;
     }
   };
-  const selectEl = doc.querySelector<HTMLSelectElement>('#themes');
-  selectEl?.addEventListener('change', onNativeThemeChange);
+
+  selectEl?.addEventListener('change', syncSelectOptionsToStore);
+
+  let selectObserver: MutationObserver | null = null;
+  if (selectEl && typeof MutationObserver !== 'undefined') {
+    selectObserver = new MutationObserver(() => {
+      syncSelectOptionsToStore();
+      if (selectEl.value) clearThemeFreshlyIngested(selectEl.value);
+    });
+    selectObserver.observe(selectEl, { childList: true });
+  }
+
+  const updateBtn = doc.getElementById('ui-preset-update-button');
+  const onNativeSaveClick = () => {
+    if (appStore.activeTheme) {
+      clearThemeFreshlyIngested(appStore.activeTheme);
+    }
+  };
+  updateBtn?.addEventListener('click', onNativeSaveClick);
 
   return () => {
     if (idleTimer) clearTimeout(idleTimer);
+    selectObserver?.disconnect();
     doc.removeEventListener('stvault:themePushed', onStVaultPushed);
     doc.removeEventListener('visibilitychange', onVisibilityChange);
     win.removeEventListener('focus', maybeSilentSync);
-    selectEl?.removeEventListener('change', onNativeThemeChange);
+    selectEl?.removeEventListener('change', syncSelectOptionsToStore);
+    updateBtn?.removeEventListener('click', onNativeSaveClick);
   };
 }
