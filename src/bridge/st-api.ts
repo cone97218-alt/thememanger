@@ -200,6 +200,171 @@ const THEME_COLOR_KEYS: Array<{ key: string; pickerId: string; cssVar: string }>
 ];
 
 /**
+ * 捕获当前界面正在编辑的完整美化快照（含最大化 CSS 编辑器、#customCSS、CodeMirror、实时取色器、滑块与 power_user）
+ */
+export function captureCurrentThemeSnapshot(
+  targetName: string,
+  baseObj?: ThemeObject,
+): ThemeObject {
+  const doc = getMainDoc();
+  const win = getMainWin();
+  const pu = getPowerUser();
+  const currentObj: Record<string, any> = { ...(baseObj || {}) };
+
+  let currentCss: string | null = null;
+
+  // 1. 优先检查展开的最大化 CSS 编辑器 (.maximized_textarea[data-for="customCSS"])
+  const maxTextarea = doc.querySelector<HTMLTextAreaElement>(
+    '.maximized_textarea[data-for="customCSS"]',
+  );
+  if (maxTextarea && typeof maxTextarea.value === 'string') {
+    if (maxTextarea.value.trim().length > 0 || doc.activeElement === maxTextarea) {
+      currentCss = maxTextarea.value;
+      const origArea = doc.querySelector<HTMLTextAreaElement>('#customCSS');
+      if (origArea && origArea.value !== currentCss) {
+        origArea.value = currentCss;
+        try {
+          origArea.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (_) {}
+      }
+    }
+  }
+
+  // 2. 检查标准 #customCSS 输入框 / CodeMirror
+  if (currentCss === null) {
+    const editorEl = doc.querySelector<any>('#customCSS, #style_custom_content');
+    if (editorEl) {
+      let editorVal: string | null = null;
+      if (editorEl.CodeMirror && typeof editorEl.CodeMirror.getValue === 'function') {
+        editorVal = editorEl.CodeMirror.getValue();
+      } else if (win.jQuery) {
+        try {
+          const cm = win.jQuery(editorEl).data('codemirror');
+          if (cm && typeof cm.getValue === 'function') editorVal = cm.getValue();
+        } catch (_) {}
+      }
+      if (editorVal === null && typeof editorEl.value === 'string') {
+        editorVal = editorEl.value;
+      }
+      if (typeof editorVal === 'string') {
+        const activeStyle = doc.getElementById('custom-style');
+        if (
+          editorVal.trim().length > 0 ||
+          doc.activeElement === editorEl ||
+          !pu?.custom_css ||
+          !activeStyle?.innerHTML?.trim()
+        ) {
+          currentCss = editorVal;
+        }
+      }
+    }
+  }
+
+  // 3. 回退到 power_user.custom_css -> <style id="custom-style"> -> 原对象
+  if (currentCss === null) {
+    if (pu && typeof pu.custom_css === 'string') {
+      currentCss = pu.custom_css;
+    } else {
+      const styleTag = doc.getElementById('custom-style');
+      if (styleTag && typeof styleTag.innerHTML === 'string') {
+        currentCss = styleTag.innerHTML;
+      } else if (typeof currentObj.custom_css === 'string') {
+        currentCss = currentObj.custom_css;
+      } else {
+        currentCss = '';
+      }
+    }
+  }
+
+  if (pu) pu.custom_css = currentCss;
+
+  const extractNum = (sliderId: string, counterId: string, puProp: string, defVal: number) => {
+    const counter = doc.querySelector<HTMLInputElement>(counterId);
+    const slider = doc.querySelector<HTMLInputElement>(sliderId);
+    if (counter && counter.value !== '' && !Number.isNaN(Number(counter.value))) {
+      const cVal = Number(counter.value);
+      if (doc.activeElement === counter || !slider || cVal !== Number(slider.value)) {
+        return cVal;
+      }
+    }
+    if (slider && slider.value !== '' && !Number.isNaN(Number(slider.value))) {
+      return Number(slider.value);
+    }
+    if (pu && pu[puProp] !== undefined && !Number.isNaN(Number(pu[puProp]))) {
+      return Number(pu[puProp]);
+    }
+    if (currentObj[puProp] !== undefined && !Number.isNaN(Number(currentObj[puProp]))) {
+      return Number(currentObj[puProp]);
+    }
+    return defVal;
+  };
+
+  const getColorVal = (pickerId: string, puProp: string, cssVar: string) => {
+    const picker = doc.querySelector<any>(pickerId);
+    if (picker) {
+      if (typeof picker.rgba === 'string' && picker.rgba.trim()) return picker.rgba.trim();
+      if (typeof picker.value === 'string' && picker.value.trim()) return picker.value.trim();
+    }
+    const cssVal = doc.documentElement.style.getPropertyValue(cssVar).trim();
+    if (cssVal) return cssVal;
+    if (pu && typeof pu[puProp] === 'string' && pu[puProp].trim()) return pu[puProp].trim();
+    if (picker) {
+      const attrCol = picker.getAttribute('color');
+      if (typeof attrCol === 'string' && attrCol.trim()) return attrCol.trim();
+    }
+    return typeof currentObj[puProp] === 'string' ? currentObj[puProp] : 'rgba(220, 220, 220, 1)';
+  };
+
+  const snapshot: ThemeObject = {
+    ...currentObj,
+    name: targetName,
+    custom_css: currentCss,
+    chat_width: extractNum('#chat_width_slider', '#chat_width_slider_counter', 'chat_width', 50),
+    font_scale: extractNum('#font_scale', '#font_scale_counter', 'font_scale', 1),
+    blur_strength: extractNum('#blur_strength', '#blur_strength_counter', 'blur_strength', 10),
+    shadow_width: extractNum('#shadow_width', '#shadow_width_counter', 'shadow_width', 2),
+  };
+
+  for (const { key, pickerId, cssVar } of THEME_COLOR_KEYS) {
+    snapshot[key] = getColorVal(pickerId, key, cssVar);
+    if (pu) pu[key] = snapshot[key];
+  }
+
+  const extraKeys = [
+    'fast_ui_mode',
+    'waifuMode',
+    'avatar_style',
+    'chat_display',
+    'toastr_position',
+    'noShadows',
+    'timer_enabled',
+    'timestamps_enabled',
+    'timestamp_model_icon',
+    'mesIDDisplay_enabled',
+    'hideChatAvatars_enabled',
+    'message_token_count_enabled',
+    'expand_message_actions',
+    'enableZenSliders',
+    'enableLabMode',
+    'hotswap_enabled',
+    'bogus_folders',
+    'zoomed_avatar_magnification',
+    'reduced_motion',
+    'compact_input_area',
+    'show_swipe_num_all_messages',
+    'click_to_edit',
+    'media_display',
+  ];
+  if (pu) {
+    for (const k of extraKeys) {
+      if (pu[k] !== undefined) snapshot[k] = pu[k];
+    }
+  }
+
+  return snapshot;
+}
+
+/**
  * 原版 theme-core.js 实战验证的全量权威固化引擎（Master Theme Enforcer）
  * 直接在主窗口 document 与 power_user 上同步 10 项颜色、custom_css、CodeMirror、滑块、布尔开关及 TT 酒馆 chat_metadata.theme
  */

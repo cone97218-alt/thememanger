@@ -21,8 +21,8 @@ import {
   toggleFavorite,
   toggleThemeTag,
 } from '../store/appStore';
-import { saveThemeToDisk } from '../bridge/st-api';
-import { showToast } from '../bridge/host';
+import { captureCurrentThemeSnapshot, saveThemeToDisk } from '../bridge/st-api';
+import { getMainDoc, showToast } from '../bridge/host';
 import { quickToggleDayNight } from '../features/autoTheme';
 import { startBackgroundBinding } from '../features/bgBinding';
 import type { ThemeObject } from '../types';
@@ -146,6 +146,55 @@ function toggleCollapse() {
 
 function handleManualSync() {
   syncThemesWithDisk({ silent: false });
+}
+
+async function flushActiveEditor(): Promise<void> {
+  const doc = getMainDoc();
+  const active = doc.activeElement as HTMLElement | null;
+  if (active && typeof active.blur === 'function') {
+    active.blur();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+}
+
+async function handleSaveCurrentTheme() {
+  await flushActiveEditor();
+  const currentName = appStore.activeTheme;
+  if (!currentName) {
+    showToast('warning', '当前未选中任何美化');
+    return;
+  }
+  try {
+    const baseObj = appStore.themes.find((t) => t.name === currentName);
+    const snapshot = captureCurrentThemeSnapshot(currentName, baseObj);
+    await saveThemeToDisk(snapshot);
+    ingestTheme(snapshot);
+    showToast('success', `已保存「${currentName}」`);
+  } catch (err: any) {
+    showToast('error', `保存失败：${err?.message || err}`);
+  }
+}
+
+async function handleSaveAsNewTheme() {
+  await flushActiveEditor();
+  const baseName = appStore.activeTheme || '新美化';
+  const inputName = window.prompt('另存为新美化', `${baseName} (副本)`);
+  if (!inputName || !inputName.trim()) return;
+  const finalName = inputName.trim();
+  if (appStore.themes.some((t) => t.name === finalName)) {
+    showToast('warning', `「${finalName}」已存在`);
+    return;
+  }
+  try {
+    const baseObj = appStore.themes.find((t) => t.name === baseName);
+    const snapshot = captureCurrentThemeSnapshot(finalName, baseObj);
+    await saveThemeToDisk(snapshot);
+    ingestTheme(snapshot);
+    selectTheme(finalName);
+    showToast('success', `已另存为「${finalName}」`);
+  } catch (err: any) {
+    showToast('error', `另存为失败：${err?.message || err}`);
+  }
 }
 
 function handleRandomTheme() {
@@ -416,7 +465,22 @@ async function handleFileImport(ev: Event) {
       </div>
 
       <div class="tc-header-right" @click.stop>
-        <div id="tc-native-buttons-slot" class="tc-native-slot"></div>
+        <button
+          type="button"
+          class="tc-icon-btn"
+          title="保存当前美化"
+          @click="handleSaveCurrentTheme"
+        >
+          <i class="fa-solid fa-floppy-disk"></i>
+        </button>
+        <button
+          type="button"
+          class="tc-icon-btn"
+          title="另存为新美化"
+          @click="handleSaveAsNewTheme"
+        >
+          <i class="fa-solid fa-file-circle-plus"></i>
+        </button>
         <button
           type="button"
           class="tc-icon-btn"

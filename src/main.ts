@@ -64,8 +64,6 @@ async function bootstrap() {
   const presetsBlock = hostBlock.querySelector<HTMLElement>('#UI-presets-block');
   const themesSelect = hostBlock.querySelector<HTMLSelectElement>('#themes');
   const originalSelectRow = themesSelect?.parentElement as HTMLElement | null;
-  const updateBtn = doc.getElementById('ui-preset-update-button');
-  const saveBtn = doc.getElementById('ui-preset-save-button');
 
   const hiddenOriginals: Array<{ el: HTMLElement; prevDisplay: string }> = [];
   if (presetsBlock) {
@@ -105,13 +103,6 @@ async function bootstrap() {
   const modalsApp: VueApp = createApp(ModalsRoot);
   modalsApp.mount(modalsMountEl);
 
-  // 将原生「更新当前主题」「另存为新主题」按钮移入面板标题栏
-  const nativeSlot = panelMountEl.querySelector('#tc-native-buttons-slot');
-  if (nativeSlot) {
-    if (updateBtn) nativeSlot.appendChild(updateBtn);
-    if (saveBtn) nativeSlot.appendChild(saveBtn);
-  }
-
   // 启动各独立功能模块并收集卸载钩子
   const cleanups: Array<() => void> = [
     startSyncEngine(),
@@ -133,10 +124,6 @@ async function bootstrap() {
       } catch (_) {}
     });
 
-    if (originalSelectRow) {
-      if (updateBtn) originalSelectRow.appendChild(updateBtn);
-      if (saveBtn) originalSelectRow.appendChild(saveBtn);
-    }
     hiddenOriginals.forEach(({ el, prevDisplay }) => {
       el.style.display = prevDisplay;
     });
