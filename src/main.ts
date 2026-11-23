@@ -1,5 +1,6 @@
 import { createApp, type App as VueApp } from 'vue';
-import App from './App.vue';
+import ThemePanel from './components/ThemePanel.vue';
+import ModalsRoot from './ModalsRoot.vue';
 import './styles/main.css';
 import { getMainDoc, getMainWin, getSTContext } from './bridge/host';
 import { appStore, initStore, syncThemesWithDisk } from './store/appStore';
@@ -11,7 +12,8 @@ import { startAvatarFeature } from './features/avatarStyle';
 import { startBgBindingFeature } from './features/bgBinding';
 import { initAvatarGalleryDB } from './features/avatarGallery';
 
-const MOUNT_CONTAINER_ID = 'st-theme-companion-root';
+const PANEL_CONTAINER_ID = 'st-theme-companion-root';
+const MODALS_CONTAINER_ID = 'st-theme-companion-modals';
 const CLEANUP_KEY = '__ST_THEME_COMPANION_CLEANUP__';
 
 function waitForHostReady(timeoutMs = 20_000): Promise<HTMLElement | null> {
@@ -71,23 +73,32 @@ async function bootstrap() {
     themesSelect.style.display = 'none';
   }
 
-  // 创建挂载节点，直接替换原 #themes 所在行位置
-  doc.getElementById(MOUNT_CONTAINER_ID)?.remove();
-  const mountEl = doc.createElement('div');
-  mountEl.id = MOUNT_CONTAINER_ID;
+  // 1. 挂载主面板节点（替换原 #themes 所在行）
+  doc.getElementById(PANEL_CONTAINER_ID)?.remove();
+  const panelMountEl = doc.createElement('div');
+  panelMountEl.id = PANEL_CONTAINER_ID;
 
   if (originalSelectRow) {
-    originalSelectRow.insertAdjacentElement('beforebegin', mountEl);
+    originalSelectRow.insertAdjacentElement('beforebegin', panelMountEl);
     originalSelectRow.style.display = 'none';
   } else {
-    hostBlock.prepend(mountEl);
+    hostBlock.prepend(panelMountEl);
   }
 
-  const vueApp: VueApp = createApp(App);
-  vueApp.mount(mountEl);
+  const panelApp: VueApp = createApp(ThemePanel);
+  panelApp.mount(panelMountEl);
 
-  // 将原生「更新当前主题」「另存为新主题」按钮移入面板标题栏，保持原版流畅操作
-  const nativeSlot = mountEl.querySelector('#tc-native-buttons-slot');
+  // 2. 挂载独立弹窗根节点到主文档 body（避免 iframe 下 Vue <Teleport> 跨 realm 失效）
+  doc.getElementById(MODALS_CONTAINER_ID)?.remove();
+  const modalsMountEl = doc.createElement('div');
+  modalsMountEl.id = MODALS_CONTAINER_ID;
+  doc.body.appendChild(modalsMountEl);
+
+  const modalsApp: VueApp = createApp(ModalsRoot);
+  modalsApp.mount(modalsMountEl);
+
+  // 将原生「更新当前主题」「另存为新主题」按钮移入面板标题栏
+  const nativeSlot = panelMountEl.querySelector('#tc-native-buttons-slot');
   if (nativeSlot) {
     if (updateBtn) nativeSlot.appendChild(updateBtn);
     if (saveBtn) nativeSlot.appendChild(saveBtn);
@@ -114,7 +125,6 @@ async function bootstrap() {
       } catch (_) {}
     });
 
-    // 还原原生按钮和 #themes 下拉框，保证热重载无残留
     if (originalSelectRow) {
       if (updateBtn) originalSelectRow.appendChild(updateBtn);
       if (saveBtn) originalSelectRow.appendChild(saveBtn);
@@ -125,12 +135,16 @@ async function bootstrap() {
     }
 
     try {
-      vueApp.unmount();
+      panelApp.unmount();
     } catch (_) {}
-    mountEl.remove();
+    try {
+      modalsApp.unmount();
+    } catch (_) {}
+    panelMountEl.remove();
+    modalsMountEl.remove();
   };
 
-  console.log('[ThemeCompanion] v3.1.0 已挂载就绪');
+  console.log('[ThemeCompanion] v3.2.0 已挂载就绪');
 }
 
 bootstrap();

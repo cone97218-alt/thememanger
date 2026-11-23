@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { appStore } from '../store/appStore';
 import { getCharacters, getCurrentCharacter, type CharacterBrief } from '../bridge/st-api';
-import { getMainDoc, showToast } from '../bridge/host';
+import { showToast } from '../bridge/host';
 import { triggerReplaceCharacterAvatar, triggerReplaceUserAvatar } from '../features/avatarStyle';
 import {
   deleteGalleryImageBlob,
@@ -12,7 +12,6 @@ import {
 } from '../features/avatarGallery';
 import type { AvatarCropRule, AvatarGalleryItem } from '../types';
 
-const teleportTarget = computed(() => getMainDoc().body);
 const activeTab = ref<'gallery' | 'style'>('gallery');
 const targetType = ref<'char' | 'user'>('char');
 
@@ -243,8 +242,7 @@ function close() {
 </script>
 
 <template>
-  <Teleport :to="teleportTarget">
-    <div v-if="appStore.showAvatarModal" class="tc-modal-mask" @click.self="close">
+  <div v-if="appStore.showAvatarModal" class="tc-modal-mask" @click.self="close">
       <div class="tc-modal">
         <div class="tc-modal-header">
           <div class="tc-modal-title">
@@ -504,5 +502,4 @@ function close() {
         </div>
       </div>
     </div>
-  </Teleport>
 </template>

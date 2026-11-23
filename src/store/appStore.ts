@@ -206,11 +206,14 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
     const added: string[] = [];
     const removed: string[] = [];
 
+    const isInitialLoad = prevNames.size === 0;
     for (const t of diskThemes) {
       upsertThemeInSTMemory(t);
       if (!prevNames.has(t.name)) {
-        added.push(t.name);
-        markRecentlyAdded(t.name);
+        if (!isInitialLoad) {
+          added.push(t.name);
+          markRecentlyAdded(t.name);
+        }
         if (t._xia) {
           t._xia.tags?.forEach((tagName) => assignThemeToTagByName(t.name, tagName));
           if (t._xia.category) assignThemeToTagByName(t.name, t._xia.category);

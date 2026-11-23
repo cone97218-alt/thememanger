@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   addDayNightPair,
   appStore,
@@ -13,13 +13,12 @@ import {
   syncThemesWithDisk,
 } from '../store/appStore';
 import { getCharacters, type CharacterBrief } from '../bridge/st-api';
-import { getMainDoc, showToast } from '../bridge/host';
+import { showToast } from '../bridge/host';
 import { evaluateAutoTheme } from '../features/autoTheme';
 import { hasLegacyData, migrateLegacyDataInto } from '../bridge/legacy-migration';
 import { startBackgroundBinding } from '../features/bgBinding';
 
 const activeTab = ref<'auto' | 'bindings' | 'tags' | 'sync'>('auto');
-const teleportTarget = computed(() => getMainDoc().body);
 
 // 日夜配对表单
 const newDayTheme = ref('');
@@ -40,13 +39,19 @@ const legacyAvailable = ref(false);
 
 const flattenedTags = computed(() => getFlattenedTagTree());
 
-onMounted(() => {
-  legacyAvailable.value = hasLegacyData();
-  characters.value = getCharacters();
-  if (!bindThemeName.value && appStore.activeTheme) {
-    bindThemeName.value = appStore.activeTheme;
-  }
-});
+watch(
+  () => appStore.showSettingsModal,
+  (open) => {
+    if (open) {
+      legacyAvailable.value = hasLegacyData();
+      characters.value = getCharacters();
+      if (!bindThemeName.value && appStore.activeTheme) {
+        bindThemeName.value = appStore.activeTheme;
+      }
+    }
+  },
+  { immediate: true },
+);
 
 function close() {
   appStore.showSettingsModal = false;
@@ -114,8 +119,7 @@ function handleLegacyMigration() {
 </script>
 
 <template>
-  <Teleport :to="teleportTarget">
-    <div v-if="appStore.showSettingsModal" class="tc-modal-mask" @click.self="close">
+  <div v-if="appStore.showSettingsModal" class="tc-modal-mask" @click.self="close">
       <div class="tc-modal">
         <div class="tc-modal-header">
           <div class="tc-modal-title">
@@ -456,5 +460,4 @@ function handleLegacyMigration() {
         </div>
       </div>
     </div>
-  </Teleport>
 </template>
