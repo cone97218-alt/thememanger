@@ -1,13 +1,14 @@
 import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
 import { markThemeSavedByNative } from './st-api';
-import { appStore, assignThemeToTagByName, createTag, ingestTheme, syncThemesWithDisk } from '../store/appStore';
+import { appStore, assignThemeToTagByName, createTag, ingestTheme, setThemeBackgroundBinding, syncThemesWithDisk } from '../store/appStore';
 
 const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
 
 interface StVaultTagsSyncedDetail {
   tagPaths?: string[];
   themeTags?: Record<string, string[]>;
+  backgroundBindings?: Record<string, string>;
 }
 
 /**
@@ -59,6 +60,13 @@ export function startSyncEngine(): () => void {
         paths.forEach((p) => {
           if (p && typeof p === 'string') assignThemeToTagByName(tName, p);
         });
+      });
+    }
+    if (detail.backgroundBindings && typeof detail.backgroundBindings === 'object') {
+      Object.entries(detail.backgroundBindings).forEach(([tName, bgFile]) => {
+        if (tName && typeof bgFile === 'string' && bgFile) {
+          setThemeBackgroundBinding(tName, bgFile);
+        }
       });
     }
   };
