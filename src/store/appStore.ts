@@ -6,11 +6,15 @@ import {
   deleteThemeFromDisk,
   fetchThemesFromDisk,
   getActiveThemeName,
+  getExpectedActiveTheme,
   getMemoryThemes,
+  installPowerUserThemeInterceptor,
   loadExtensionSettings,
   markThemeFreshlyIngested,
+  recordExpectedActiveTheme,
   saveExtensionSettings,
   saveThemeToDisk,
+  setExpectedThemeGetter,
   upsertThemeInSTMemory,
 } from '../bridge/st-api';
 import { notifyTagsChanged } from '../bridge/public-api';
@@ -53,6 +57,7 @@ export function createDefaultSettings(): CompanionSettings {
     pageSize: 50,
     usageCounts: {},
     showUsageCount: false,
+    lastActiveTheme: '',
   };
 }
 
@@ -119,7 +124,17 @@ export function initStore(): void {
   const saved = loadExtensionSettings<CompanionSettings>();
   appStore.settings = mergeSettings(saved);
   appStore.themes = getMemoryThemes();
-  appStore.activeTheme = getActiveThemeName();
+
+  setExpectedThemeGetter(() => appStore.settings.lastActiveTheme || appStore.activeTheme || '');
+  installPowerUserThemeInterceptor();
+
+  const currentDomTheme = getActiveThemeName();
+  const persistedLast = appStore.settings.lastActiveTheme || getExpectedActiveTheme();
+  appStore.activeTheme = persistedLast || currentDomTheme;
+  if (appStore.activeTheme) {
+    appStore.settings.lastActiveTheme = appStore.activeTheme;
+    recordExpectedActiveTheme(appStore.activeTheme);
+  }
 
   // 监听配置变化自动持久化
   watch(
@@ -245,7 +260,22 @@ export async function syncThemesWithDisk(options: { silent?: boolean } = {}): Pr
     if (isInitialLoad || added.length > 0 || removed.length > 0) {
       appStore.themes = diskThemes;
     }
-    appStore.activeTheme = getActiveThemeName();
+
+    const expectedTheme = appStore.settings.lastActiveTheme || getExpectedActiveTheme();
+    const domActive = getActiveThemeName();
+    if (expectedTheme && diskMap.has(expectedTheme) && domActive !== expectedTheme) {
+      // 重进酒馆首页时若被 TT 酒馆早期上下文回滚到旧主题 A，则权威恢复到用户最后选定的主题 B
+      applyTheme(expectedTheme, diskMap.get(expectedTheme));
+      appStore.activeTheme = expectedTheme;
+      const boundBg = appStore.settings.backgroundBindings[expectedTheme];
+      if (boundBg) {
+        setTimeout(() => {
+          applyBackground(boundBg);
+        }, 120);
+      }
+    } else {
+      appStore.activeTheme = domActive || expectedTheme;
+    }
     appStore.lastSyncAt = Date.now();
 
     if (!options.silent) {
@@ -280,6 +310,8 @@ export function selectTheme(themeName: string): boolean {
   const ok = applyTheme(themeName, themeObj);
   if (ok) {
     appStore.activeTheme = themeName;
+    appStore.settings.lastActiveTheme = themeName;
+    recordExpectedActiveTheme(themeName);
     appStore.settings.usageCounts[themeName] = (appStore.settings.usageCounts[themeName] || 0) + 1;
     clearRecentlyAdded(themeName);
     const boundBg = appStore.settings.backgroundBindings[themeName];
@@ -554,6 +586,10 @@ export async function renameTheme(oldName: string, newName: string): Promise<boo
   });
 
   appStore.themes = appStore.themes.map((t) => (t.name === oldName ? cloned : t));
+  if (appStore.settings.lastActiveTheme === oldName) {
+    appStore.settings.lastActiveTheme = cleanNew;
+    recordExpectedActiveTheme(cleanNew);
+  }
   if (appStore.activeTheme === oldName) {
     selectTheme(cleanNew);
   }
@@ -570,6 +606,10 @@ export async function deleteTheme(themeName: string): Promise<boolean> {
   });
   delete appStore.settings.backgroundBindings[themeName];
   appStore.activeTheme = getActiveThemeName();
+  if (appStore.settings.lastActiveTheme === themeName) {
+    appStore.settings.lastActiveTheme = appStore.activeTheme;
+    recordExpectedActiveTheme(appStore.activeTheme);
+  }
   showToast('success', `已删除「${themeName}」`);
   return true;
 }

@@ -2,8 +2,79 @@ import type { ThemeObject } from '../types';
 import { getMainDoc, getMainWin, getSTContext } from './host';
 
 export const SETTINGS_NAMESPACE = 'theme_companion_v3';
+export const LAST_ACTIVE_THEME_STORAGE_KEY = 'themeManager_lastActiveTheme';
 
 let _bgModulePromise: Promise<any> | null = null;
+let _expectedThemeGetter: (() => string) | null = null;
+
+export function setExpectedThemeGetter(getter: () => string): void {
+  _expectedThemeGetter = getter;
+}
+
+export function getExpectedActiveTheme(): string {
+  const fromGetter = _expectedThemeGetter ? _expectedThemeGetter() : '';
+  if (fromGetter) return fromGetter;
+  try {
+    const win = getMainWin();
+    return win.localStorage?.getItem(LAST_ACTIVE_THEME_STORAGE_KEY) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+export function recordExpectedActiveTheme(themeName: string): void {
+  if (!themeName) return;
+  try {
+    const win = getMainWin();
+    win.localStorage?.setItem(LAST_ACTIVE_THEME_STORAGE_KEY, themeName);
+  } catch (_) {}
+}
+
+/**
+ * 在 power_user.theme 上安装属性拦截器：
+ * 当 TT 酒馆原生 syncThemeForCurrentContext / applyThemeForCurrentContext 在重进首页或切聊时
+ * 试图把主题强行回退为旧主题 A 时，自动拦截并维持用户选定的美化 B
+ */
+export function installPowerUserThemeInterceptor(): void {
+  const pu = getPowerUser();
+  if (!pu || typeof pu !== 'object' || pu._tcThemeTrapInstalled) return;
+
+  try {
+    let currentTheme = String(pu.theme || '');
+    Object.defineProperty(pu, '_tcThemeTrapInstalled', {
+      value: true,
+      writable: false,
+      configurable: true,
+    });
+
+    Object.defineProperty(pu, 'theme', {
+      get() {
+        return currentTheme;
+      },
+      set(val: unknown) {
+        const nextVal = String(val ?? '');
+        const stack = new Error().stack || '';
+        const isTTContextSync =
+          stack.includes('syncThemeForCurrentContext') ||
+          stack.includes('applyThemeForCurrentContext');
+
+        if (isTTContextSync) {
+          const expected = getExpectedActiveTheme();
+          if (expected && nextVal && nextVal !== expected) {
+            currentTheme = expected;
+            queueMicrotask(() => {
+              applyTheme(expected);
+            });
+            return;
+          }
+        }
+        currentTheme = nextVal;
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  } catch (_) {}
+}
 
 /**
  * 记录需要由本插件直接渲染 DOM 的免刷新主题（本会话从酒馆匣推送或导入、尚未经酒馆原生保存按钮写入 power-user.js 闭包的主题）
@@ -304,14 +375,22 @@ function applyFallbackThemeDOM(theme: ThemeObject): void {
 export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
   if (!themeName) return false;
   captureInitialNativeThemes();
+  installPowerUserThemeInterceptor();
+  recordExpectedActiveTheme(themeName);
 
   const doc = getMainDoc();
   const win = getMainWin();
+  const ctx = getSTContext();
+  const pu = getPowerUser();
   const select = doc.querySelector<HTMLSelectElement>('#themes');
   if (!select) return false;
 
   if (themeObj) {
     upsertThemeInSTMemory(themeObj);
+  }
+
+  if (pu) {
+    pu.theme = themeName;
   }
 
   let targetOpt: HTMLOptionElement | null = null;
@@ -364,6 +443,22 @@ export function applyTheme(themeName: string, themeObj?: ThemeObject): boolean {
       });
     }
   }
+
+  // 同步更新当前聊天元数据中的 theme，防止 TT 酒馆重进或切回首页时用旧的 chat_metadata.theme 回滚美化
+  try {
+    if (ctx?.chat_metadata && typeof ctx.chat_metadata === 'object') {
+      ctx.chat_metadata.theme = themeName;
+      if (typeof ctx.saveMetadataDebounced === 'function') {
+        ctx.saveMetadataDebounced();
+      }
+    }
+    if (ctx?.chatMetadata && typeof ctx.chatMetadata === 'object') {
+      ctx.chatMetadata.theme = themeName;
+    }
+    if (typeof ctx?.saveSettingsDebounced === 'function') {
+      ctx.saveSettingsDebounced();
+    }
+  } catch (_) {}
 
   return true;
 }
