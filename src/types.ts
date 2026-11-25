@@ -115,8 +115,6 @@ export interface CompanionSettings {
   usageCounts: Record<string, number>;
   /** 是否在列表项旁显示使用次数 */
   showUsageCount: boolean;
-  /** 用户最后一次选定的激活美化名称（用于拦截 TT 酒馆上下文回滚与跨会话恢复） */
-  lastActiveTheme: string;
 }
 
 export interface StVaultThemePushedDetail {

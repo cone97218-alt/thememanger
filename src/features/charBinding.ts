@@ -1,13 +1,5 @@
 import { getMainDoc, getSTContext, showToast } from '../bridge/host';
-import {
-  applyBackground,
-  applyTheme,
-  getActiveThemeName,
-  getCurrentCharacter,
-  getExpectedActiveTheme,
-  installPowerUserThemeInterceptor,
-  onSTEvent,
-} from '../bridge/st-api';
+import { getCurrentCharacter, onSTEvent } from '../bridge/st-api';
 import { appStore, resolveTargetTheme, selectTheme } from '../store/appStore';
 
 const TT_HIDE_STYLE_ID = 'tc-hide-tt-native-bind-style';
@@ -88,69 +80,32 @@ function injectHideTTBindingUIStyle(): void {
  */
 export function startCharacterBindingWatcher(): () => void {
   neutralizeTTContextThemeSync();
-  installPowerUserThemeInterceptor();
   injectHideTTBindingUIStyle();
 
   let lastAvatar = '';
 
   const applyForCurrentChar = () => {
-    neutralizeTTContextThemeSync();
-    installPowerUserThemeInterceptor();
-
     const ch = getCurrentCharacter();
-    if (ch && ch.avatar) {
-      const target = appStore.settings.characterBindings[ch.avatar];
-      if (target && ch.avatar !== lastAvatar) {
-        lastAvatar = ch.avatar;
-        const resolved = resolveTargetTheme(target);
-        if (resolved && resolved !== appStore.activeTheme) {
-          if (selectTheme(resolved)) {
-            showToast('info', `已为「${ch.name}」切换绑定美化：${resolved}`);
-          }
-          return;
-        }
+    if (!ch || !ch.avatar || ch.avatar === lastAvatar) return;
+    lastAvatar = ch.avatar;
+
+    const target = appStore.settings.characterBindings[ch.avatar];
+    if (!target) return;
+
+    const resolved = resolveTargetTheme(target);
+    if (resolved && resolved !== appStore.activeTheme) {
+      if (selectTheme(resolved)) {
+        showToast('info', `已为「${ch.name}」切换绑定美化：${resolved}`);
       }
-      lastAvatar = ch.avatar;
-    } else {
-      lastAvatar = '';
-    }
-
-    // 若当前没有角色专属绑定（或处于首页欢迎页），检查是否被 TT 酒馆原生上下文同步回滚到了旧主题
-    const expected = appStore.settings.lastActiveTheme || getExpectedActiveTheme();
-    const domActive = getActiveThemeName();
-    if (
-      expected &&
-      domActive !== expected &&
-      appStore.themes.some((t) => t.name === expected)
-    ) {
-      const themeObj = appStore.themes.find((t) => t.name === expected);
-      applyTheme(expected, themeObj);
-      appStore.activeTheme = expected;
-    }
-
-    const active = appStore.activeTheme || domActive;
-    const boundBg = active ? appStore.settings.backgroundBindings[active] : '';
-    if (boundBg) {
-      setTimeout(() => {
-        applyBackground(boundBg);
-      }, 200);
     }
   };
 
-  // 启动时立即检查一次，修复在脚本挂载前已被 TT 酒馆首页初始化回滚的主题
-  setTimeout(applyForCurrentChar, 60);
-
-  const unsubChat = onSTEvent('CHAT_CHANGED', () => {
-    setTimeout(applyForCurrentChar, 80);
-  });
-
-  const unsubChar = onSTEvent('CHARACTER_SELECTED', () => {
+  const unsub = onSTEvent('CHAT_CHANGED', () => {
     setTimeout(applyForCurrentChar, 80);
   });
 
   return () => {
-    unsubChat();
-    unsubChar();
+    unsub();
     getMainDoc().getElementById(TT_HIDE_STYLE_ID)?.remove();
   };
 }

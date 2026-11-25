@@ -1,6 +1,6 @@
 import type { StVaultThemePushedDetail } from '../types';
 import { getMainDoc, getMainWin, showToast } from './host';
-import { applyTheme, getExpectedActiveTheme, markThemeSavedByNative, recordExpectedActiveTheme } from './st-api';
+import { markThemeSavedByNative } from './st-api';
 import { appStore, assignThemeToTagByName, createTag, ingestTheme, setThemeBackgroundBinding, syncThemesWithDisk } from '../store/appStore';
 
 const FOCUS_SYNC_COOLDOWN_MS = 300_000; // 5 分钟冷却，避免频繁拉取全量 settings 拖慢切窗体验
@@ -112,19 +112,7 @@ export function startSyncEngine(): () => void {
       }
     });
     if (selectEl.value && selectEl.value !== appStore.activeTheme) {
-      const stack = new Error().stack || '';
-      const isTTContextSync =
-        stack.includes('syncThemeForCurrentContext') ||
-        stack.includes('applyThemeForCurrentContext');
-      const expected = appStore.settings.lastActiveTheme || getExpectedActiveTheme();
-      if (isTTContextSync && expected && selectEl.value !== expected) {
-        const themeObj = appStore.themes.find((t) => t.name === expected);
-        applyTheme(expected, themeObj);
-        return;
-      }
       appStore.activeTheme = selectEl.value;
-      appStore.settings.lastActiveTheme = selectEl.value;
-      recordExpectedActiveTheme(selectEl.value);
     }
   };
 
