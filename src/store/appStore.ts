@@ -13,7 +13,7 @@ import {
   saveThemeToDisk,
   upsertThemeInSTMemory,
 } from '../bridge/st-api';
-import { notifyTagsChanged } from '../bridge/public-api';
+import { notifyTagsChanged, notifyThemeChanged, notifyThemesUpdated } from '../bridge/public-api';
 import { showToast } from '../bridge/host';
 
 export function createDefaultSettings(): CompanionSettings {
@@ -137,6 +137,24 @@ export function initStore(): void {
       notifyTagsChanged(tags);
     },
     { deep: true },
+  );
+
+  // 当前激活美化变化时通知外部插件
+  watch(
+    () => appStore.activeTheme,
+    (next, prev) => {
+      if (next && next !== prev) {
+        notifyThemeChanged(next, prev || '');
+      }
+    },
+  );
+
+  // 美化名单变化（增删/重命名/磁盘同步）时通知外部插件
+  watch(
+    () => appStore.themes.map((t) => t.name).join('\0'),
+    () => {
+      notifyThemesUpdated(appStore.themes.map((t) => t.name));
+    },
   );
 }
 

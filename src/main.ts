@@ -3,8 +3,15 @@ import ThemePanel from './components/ThemePanel.vue';
 import ModalsRoot from './ModalsRoot.vue';
 import './styles/main.css';
 import { getMainDoc, getMainWin, getSTContext } from './bridge/host';
-import { appStore, initStore, syncThemesWithDisk } from './store/appStore';
-import { installPublicTagApi } from './bridge/public-api';
+import {
+  appStore,
+  getTagThemeSet,
+  initStore,
+  selectTheme,
+  syncThemesWithDisk,
+  toggleFavorite,
+} from './store/appStore';
+import { installPublicApi } from './bridge/public-api';
 import { startSyncEngine } from './bridge/stvault-sync';
 import { startAutoThemeWatcher } from './features/autoTheme';
 import { startCharacterBindingWatcher } from './features/charBinding';
@@ -57,7 +64,18 @@ async function bootstrap() {
 
   // 初始化状态、对外 API 与图库数据库
   initStore();
-  installPublicTagApi(() => appStore.settings.tags);
+  installPublicApi({
+    getThemes: () => appStore.themes,
+    getActiveTheme: () => appStore.activeTheme,
+    getTags: () => appStore.settings.tags,
+    getFavorites: () => appStore.settings.favorites,
+    getUsageCounts: () => appStore.settings.usageCounts,
+    getBackgroundBindings: () => appStore.settings.backgroundBindings,
+    getTagThemeSet,
+    selectTheme,
+    toggleFavorite,
+    syncThemesWithDisk,
+  });
   initAvatarGalleryDB();
 
   // 隐藏酒馆原生 #UI-presets-block 内的全部原生元素（包含「UI 主题」标题栏、#themes 下拉框及 TT 酒馆原生绑定按钮）
